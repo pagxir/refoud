@@ -24,6 +24,10 @@ import android.content.pm.PackageManager;
 import android.net.ProxyInfo;
 import android.net.VpnService;
 import android.os.Build;
+import android.system.Os;
+import android.system.OsConstants;
+import android.system.ErrnoException;
+import android.system.StructPollfd;
 import android.os.ParcelFileDescriptor;
 import android.text.TextUtils;
 import android.util.Log;
@@ -35,8 +39,15 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.SocketException;
 import java.nio.ByteBuffer;
+import java.nio.channels.Selector;
+import java.nio.channels.SelectionKey;
 import java.nio.channels.DatagramChannel;
+import java.net.StandardSocketOptions;
 import java.util.Set;
+import java.net.InetSocketAddress;
+import java.net.InetAddress;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 public class ToyVpnRunnable implements Runnable {
@@ -175,9 +186,158 @@ public class ToyVpnRunnable implements Runnable {
         }
     }
 
+    private static final int IPV6_HEADER_LENGTH = 40;  // IPv6头部长度
+    private static final int UDP_HEADER_LENGTH = 8;    // UDP头部长度
+    private static final int DNS_A_RECORD = 1;         // A记录的类型码
+    private static final int DNS_CLASS_IN = 1;
+    private static final int DNS_PORT = 53;
+
+    public static boolean isDnsPacket(ByteBuffer query) {
+        if (query == null || query.remaining() < IPV6_HEADER_LENGTH + UDP_HEADER_LENGTH) {
+            return false;
+        }
+
+        query.position(IPV6_HEADER_LENGTH + query.position());
+        
+        int udpSrcPort = query.getShort() & 0xFFFF;
+        int udpDstPort = query.getShort() & 0xFFFF;
+        
+        if (udpDstPort != DNS_PORT) {
+            return false;
+        }
+        
+        int udpLength = query.getShort() & 0xFFFF;
+        
+        if (query.remaining() + 6 < udpLength) {
+            return false;
+        }
+
+	query.getShort(); // checksum
+        // query.position(query.position() + UDP_HEADER_LENGTH);
+        
+        int transactionId = query.getShort() & 0xFFFF;
+        int flags = query.getShort() & 0xFFFF;
+        int questions = query.getShort() & 0xFFFF;
+        int answerRRs = query.getShort() & 0xFFFF;
+        int authorityRRs = query.getShort() & 0xFFFF;
+        int additionalRRs = query.getShort() & 0xFFFF;
+
+        if (questions == 0 || 0x8000 == (flags & 0x8000)) {
+            return false;
+        }
+
+        while (query.remaining() > 0) {
+            byte length = query.get();
+            if (length == 0) {
+                break;
+            }
+            query.position(query.position() + length);
+        }
+
+        int qType = query.getShort() & 0xFFFF;
+        int qClass = query.getShort() & 0xFFFF;
+
+	// Log.i("HELLO", "isDnsPacket: " + (qType == DNS_A_RECORD));
+        return qType == DNS_A_RECORD;
+    }
+
+    public static ByteBuffer generateDnsResponse(ByteBuffer query) {
+        if (query == null || query.remaining() < 12) {
+            throw new IllegalArgumentException("Invalid DNS request buffer");
+        }
+
+        ByteBuffer response = ByteBuffer.allocate(1512);
+	response.put(query.slice());
+	response.flip();
+	System.out.println("limit: " + response.limit());
+
+	byte[] src = new byte[16];
+	byte[] dst = new byte[16];
+
+	response.position(8);
+	response.get(src, 0, 16);
+	response.get(dst, 0, 16);
+
+	byte[] srcPort = new byte[2];
+	byte[] dstPort = new byte[2];
+	response.get(srcPort, 0, 2);
+	response.get(dstPort, 0, 2);
+
+	response.position(8);
+	response.put(dst);
+	response.put(src);
+	response.put(dstPort);
+	response.put(srcPort);
+
+	short flags = response.getShort(50); 
+	response.putShort(50, (short)0x8180);
+
+	short checksum = response.getShort(46);
+	int newchecksum = (checksum & 0xffff) + (flags) + (0xffff & ~0x8180);
+	while ((newchecksum >> 16) > 0)
+	       	newchecksum = (newchecksum >> 16) + (newchecksum & 0xffff);
+	response.putShort(46, (short)newchecksum);
+
+	response.position(0);
+        return response;
+    }
+
+    static HashMap<Integer, byte[]> mDnsHeaderMap = new HashMap<>();
+    private void dnsCachePrepareHeader(ByteBuffer packet) {
+	int xid = packet.getShort(40 + 8);
+	byte[] header = new byte[40 + 8 + 2];
+	packet.get(header);
+	mDnsHeaderMap.put(xid, header);
+
+	Log.d("HELLO", "dnsCachePrepareHeader xid=" + xid);
+    }
+
+    ByteBuffer assembleDnsPacket(ByteBuffer packet, int length) {
+	packet.rewind();
+	int xid = packet.getShort();
+	ByteBuffer newPacket = ByteBuffer.allocate(length + 48);
+
+	Log.d("HELLO", "assembleDnsPacket xid=" + xid);
+	if (!mDnsHeaderMap.containsKey((Integer)xid)) return null;
+	newPacket.put(mDnsHeaderMap.get(xid));
+	// newPacket.position(48);
+	// packet.rewind();
+	packet.limit(length);
+	newPacket.put(packet); 
+	newPacket.flip();
+	newPacket.putShort(44, (short)(length + 8));
+	newPacket.putShort(4, (short)(length + 8));
+
+	int sum = 0;
+	newPacket.position(8);
+	while (newPacket.remaining() > 1) {
+		sum += (0xffff & newPacket.getShort());
+	}
+
+	if (newPacket.remaining() > 0) {
+		int val = (0xff & newPacket.get());
+		sum += (val << 8);
+	}
+
+	sum += (length + 8);
+	sum += newPacket.get(6);
+	while ((sum >> 16) > 0)
+	       	sum = (sum >> 16) + (sum & 0xffff);
+
+	int check = (newPacket.getShort(46) & 0xffff) + (0xffff & ~sum);
+
+	while ((check >> 16) > 0)
+	       	check = (check >> 16) + (check & 0xffff);
+	newPacket.putShort(46, (short)check);
+	newPacket.rewind();
+
+	return newPacket;
+    }
+
     private boolean run(SocketAddress server)
             throws InterruptedException, IllegalArgumentException, IllegalStateException {
         DatagramChannel tunnel = null;
+        DatagramChannel dnsclient = null;
         ParcelFileDescriptor iface = null;
         boolean success = false;
         try {
@@ -189,6 +349,8 @@ public class ToyVpnRunnable implements Runnable {
 
             // Create a DatagramChannel as the VPN tunnel.
             tunnel = DatagramChannel.open();
+	    tunnel.setOption(StandardSocketOptions.SO_SNDBUF, 1024 * 1024);
+	    tunnel.setOption(StandardSocketOptions.SO_RCVBUF, 1024 * 1024);
 
             // Protect the tunnel before connecting to avoid loopback.
             if (!mService.protect(tunnel.socket())) {
@@ -202,8 +364,20 @@ public class ToyVpnRunnable implements Runnable {
             // writing. Here we put the tunnel into non-blocking mode.
             tunnel.configureBlocking(false);
 
+            dnsclient = DatagramChannel.open();
+            if (!mService.protect(tunnel.socket())) {
+                throw new IllegalStateException("Cannot protect the tunnel");
+            }
+            dnsclient.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[] {(byte)223, 5, 5, 5}), 53));
+	    dnsclient.configureBlocking(false);
+
             // Authenticate with server and configure the virtual network interface.
-            String parameters = handshakeServer(tunnel);
+            String parameters = "mtu,1400 address,3402:52e2:76b5::5efe:10.101.0.10,64 dns,64:ff9b::7f09:909"; // handshakeServer(tunnel);
+	    parameters += " address,10.0.2.15,24";
+	    parameters += " route,64:ff9b::,96";
+	    parameters += " route,2000::,48";
+	    parameters += " route,2001:4860:4860::,48";
+
             iface = configureVirtualInterface(parameters);
             Log.i(getTag(), "New interface: " + iface + " (" + parameters + ")");
 
@@ -238,25 +412,44 @@ public class ToyVpnRunnable implements Runnable {
                 boolean idle = true;
 
                 // Read the outgoing packet from the input stream (Virtual Interface).
-                int length = ifaceIn.read(packet.array());
+                int length = ifaceIn.read(packet.array(), 4, MAX_PACKET_SIZE - 4);
                 if (length > 0) {
-                    // Write the outgoing packet to the tunnel (server).
-                    packet.limit(length);
-                    tunnel.write(packet);
-                    packet.clear();
+		    packet.limit(length + 4);
+		    packet.position(4);
+
+		    if (isDnsPacket(packet)) {
+			packet.position(4);
+			ByteBuffer newPacket = generateDnsResponse(packet);
+			dnsCachePrepareHeader(newPacket);
+			packet.position(4 + 48);
+			// ifaceOut.write(newPacket.array(), 0, newPacket.limit());
+			dnsclient.write(packet);
+			packet.clear();
+		    } else {
+			packet.position(0);
+			// Write the outgoing packet to the tunnel (server).
+			// packet.position(length + 4);
+			byte val = packet.get(4 + 6);
+			packet.put(4 + 6, (byte)(val ^ (byte)0x5a));
+			tunnel.write(packet);
+			packet.clear();
+			if (length > 60)
+			    lastReadVirtualInterfaceTime = System.currentTimeMillis();
+		    }
 
                     // There might be more outgoing packets.
                     idle = false;
-                    lastReadVirtualInterfaceTime = System.currentTimeMillis();
                 }
 
                 // Read the incoming packet from the tunnel (server).
                 length = tunnel.read(packet);
                 if (length > 0) {
                     // Ignore control messages, which start with zero.
-                    if (packet.get(0) != 0) {
+                    if (packet.get(4) != 0) {
+			byte val = packet.get(4 + 6);
+			packet.put(4 + 6, (byte)((val) ^ (byte)(0x5a)));
                         // Write the incoming packet to the output stream (Virtual Interface).
-                        ifaceOut.write(packet.array(), 0, length);
+                        ifaceOut.write(packet.array(), 4, length - 4);
                     } else {
                         // response to remote server with idle packet immediately.
                         tunnel.write(packet);
@@ -268,29 +461,91 @@ public class ToyVpnRunnable implements Runnable {
                     lastReadServerTime = System.currentTimeMillis();
                 }
 
+		length = dnsclient.read(packet);
+		if (length > 0) {
+                    ByteBuffer dnsPacket = assembleDnsPacket(packet, length);
+		    if (dnsPacket != null) {
+			ifaceOut.write(dnsPacket.array(), 0, dnsPacket.limit());
+		    }
+
+                    packet.clear();
+
+		    // ifaceOut.write(packet.array(), 4, length - 4);
+		    idle = false;
+		}
+
                 // If we are idle or waiting for the network, sleep for a
                 // fraction of time to avoid busy looping.
                 if (idle) {
-                    //noinspection BusyWait
-                    Thread.sleep(IDLE_INTERVAL_MS);
-                    final long timeNow = System.currentTimeMillis();
+			StructPollfd pollTunnel = new StructPollfd();
+			pollTunnel.events = (short)OsConstants.POLLIN;
+			pollTunnel.fd = ParcelFileDescriptor.fromDatagramSocket(tunnel.socket()).getFileDescriptor();
 
-                    if (lastReadServerTime + RECEIVE_TIMEOUT_MS <= timeNow) {
-                        // We are sending for a long time but not receiving.
-                        throw new IOException("Timed out");
-                    }
+			StructPollfd pollDns = new StructPollfd();
+			pollDns.events = (short)OsConstants.POLLIN;
+			pollDns.fd = ParcelFileDescriptor.fromDatagramSocket(dnsclient.socket()).getFileDescriptor();
 
-                    if (lastReadServerTime + KEEPALIVE_INTERVAL_MS <= timeNow) {
-                        // We are receiving for a long time but not sending.
-                        // Send empty control messages.
-                        packet.put((byte) 0).limit(1);
-                        {
-                            packet.position(0);
-                            tunnel.write(packet);
-                        }
-                        packet.clear();
-                    }
-                }
+			StructPollfd pollIface = new StructPollfd();
+			pollIface.events = (short)OsConstants.POLLIN;
+			pollIface.fd = iface.getFileDescriptor();
+
+			//noinspection BusyWait
+			try {
+				int nPolled = Os.poll(new StructPollfd[]{pollTunnel, pollDns, pollIface}, 1000);
+				if ((pollTunnel.revents & OsConstants.POLLIN) == OsConstants.POLLIN) lastReadServerTime = System.currentTimeMillis();
+			} catch (ErrnoException e) {
+				throw new IOException("Timed out");
+			}
+
+			final long timeNow = System.currentTimeMillis();
+
+			if (lastReadVirtualInterfaceTime > lastReadServerTime && lastReadServerTime + RECEIVE_TIMEOUT_MS <= timeNow) {
+				// We are sending for a long time but not receiving.
+				lastReadVirtualInterfaceTime = System.currentTimeMillis();
+				lastReadServerTime = System.currentTimeMillis();
+
+				try {
+					int nPolled = Os.poll(new StructPollfd[]{pollTunnel, pollDns, pollIface}, 3600000);
+				} catch (ErrnoException e) {
+				}
+
+				tunnel.close();
+				tunnel = DatagramChannel.open();
+				tunnel.setOption(StandardSocketOptions.SO_SNDBUF, 1024 * 1024);
+				tunnel.setOption(StandardSocketOptions.SO_RCVBUF, 1024 * 1024);
+
+				// Protect the tunnel before connecting to avoid loopback.
+				if (!mService.protect(tunnel.socket())) {
+					throw new IllegalStateException("Cannot protect the tunnel");
+				}
+
+				// Connect to the server.
+				tunnel.connect(server);
+
+				// For simplicity, we use the same thread for both reading and
+				// writing. Here we put the tunnel into non-blocking mode.
+				tunnel.configureBlocking(false);
+
+				dnsclient.close();
+				dnsclient = DatagramChannel.open();
+				if (!mService.protect(tunnel.socket())) {
+					throw new IllegalStateException("Cannot protect the tunnel");
+				}
+				dnsclient.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[] {(byte)223, 5, 5, 5}), 53));
+				dnsclient.configureBlocking(false);
+
+				// throw new IOException("Timed out");
+			}
+
+			if (lastReadServerTime + KEEPALIVE_INTERVAL_MS <= timeNow) {
+				// We are receiving for a long time but not sending.
+				// Send empty control messages.
+				packet.put((byte) 0).limit(1);
+				packet.position(0);
+				// tunnel.write(packet);
+				packet.clear();
+			}
+		}
             }
         } catch (IOException e) {
             Log.e(getTag(), "Cannot use socket", e);
@@ -306,6 +561,9 @@ public class ToyVpnRunnable implements Runnable {
                 if (iface != null) {
                     iface.close();
                 }
+		if (dnsclient != null) {
+			dnsclient.close();
+		}
                 if (tunnel != null) {
                     tunnel.disconnect();
                     tunnel.close();

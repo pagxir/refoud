@@ -74,7 +74,7 @@ public class ToyVpnService extends VpnService {
 
         // Create the intent to "configure" the connection (just start ToyVpnClient).
         mConfigureIntent = PendingIntent.getActivity(this, 0, new Intent(this, ToyVpnClient.class),
-                PendingIntent.FLAG_UPDATE_CURRENT);
+                PendingIntent.FLAG_UPDATE_CURRENT| PendingIntent.FLAG_MUTABLE);
     }
 
     @Override

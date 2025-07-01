@@ -11,7 +11,7 @@ android {
 
     defaultConfig {
         applicationId "com.ssrlive.toyvpn"
-        minSdkVersion 23
+        minSdkVersion 24
         targetSdkVersion 31
         versionName = '0.1.1'
     }
@@ -37,13 +37,6 @@ android {
                     outputFileName = "${appBinaryName}_${variant.buildType.name}_${defaultConfig.versionName}.apk"
                 }
             }
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path "../server/linux/CMakeLists.txt"
-            version '3.18.1'
         }
     }
 
