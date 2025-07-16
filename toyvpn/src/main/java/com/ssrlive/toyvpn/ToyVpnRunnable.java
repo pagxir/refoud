@@ -35,9 +35,21 @@ import android.util.Log;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.FileDescriptor;
+import java.lang.reflect.Field;
+import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.NetworkRequest;
+import android.net.LinkProperties;
+import android.net.Network;
+import java.net.Inet4Address;
+import android.net.NetworkCapabilities;
+import java.nio.channels.SelectableChannel;
+import java.nio.channels.spi.AbstractSelectableChannel;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.SocketException;
+import java.net.DatagramSocket;
 import java.nio.ByteBuffer;
 import java.nio.channels.Selector;
 import java.nio.channels.SelectionKey;
@@ -48,6 +60,7 @@ import java.net.InetSocketAddress;
 import java.net.InetAddress;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 public class ToyVpnRunnable implements Runnable {
@@ -102,6 +115,8 @@ public class ToyVpnRunnable implements Runnable {
 
     private PendingIntent mConfigureIntent;
     private OnConnectListener mOnConnectListener;
+    private ConnectivityManager mManager = null;
+    private final static String LOG_TAG = "HELLO";
 
     // Proxy settings
     private String mProxyHostName;
@@ -121,6 +136,7 @@ public class ToyVpnRunnable implements Runnable {
         mServerName = serverName;
         mServerPort= serverPort;
         mSharedSecret = sharedSecret;
+        mManager = (ConnectivityManager) mService.getSystemService(Context.CONNECTIVITY_SERVICE);
 
         if (!TextUtils.isEmpty(proxyHostName)) {
             mProxyHostName = proxyHostName;
@@ -142,6 +158,103 @@ public class ToyVpnRunnable implements Runnable {
 
     public void setOnConnectListener(OnConnectListener listener) {
         mOnConnectListener = listener;
+    }
+
+    Map<String, Network> networkMap = new HashMap<>();
+    final ConnectivityManager.NetworkCallback mCallback = new ConnectivityManager.NetworkCallback() {
+
+        @Override
+        public void onAvailable(Network network) {
+            super.onAvailable(network);
+            String netId = network.toString();
+            Log.d(LOG_TAG, "NetworkStateCallback.onAvailable " + netId);
+
+            networkMap.put(netId, network);
+        }
+
+        @Override
+        public void onLost(Network network) {
+            super.onLost(network);
+            String netId = network.toString();
+            Log.d(LOG_TAG, "NetworkStateCallback.onLost " + netId);
+
+            networkMap.remove(netId);
+        }
+
+        @Override
+        public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+            super.onCapabilitiesChanged(network, capabilities);
+            String netId = network.toString();
+            Log.d(LOG_TAG, "NetworkStateCallback.onCapabilitiesChanged " + netId);
+        }
+    };
+
+    private Network getUnderlyingNetwork(ConnectivityManager manager) {
+	int priority = -1;
+	Network underlyingNetwork = null;
+	Network network0 = manager.getActiveNetwork();
+
+	if (network0 != null) {
+	    NetworkCapabilities capabilities = manager.getNetworkCapabilities(network0);
+
+	    if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_FOREGROUND)) {
+		priority = mManager.getMultipathPreference(network0);
+		underlyingNetwork = network0;
+	    }
+	}
+
+	for (Map.Entry<String, Network> entry : networkMap.entrySet()) {
+	    Log.d(LOG_TAG, "key: " + entry.getKey() + " value: " + entry.getValue());
+
+	    Network network = entry.getValue();
+	    NetworkCapabilities capabilities = manager.getNetworkCapabilities(network);
+
+	    if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_FOREGROUND)) {
+		continue;
+	    }
+
+	    int preference = mManager.getMultipathPreference(network);
+	    if (preference > priority) {
+		underlyingNetwork = network;
+		priority = preference;
+	    }
+	}
+
+	return underlyingNetwork;
+    }
+
+    public InetSocketAddress getDnsServer(boolean next) {
+	InetSocketAddress defServer = null;
+	Network currentNetwork = next? getUnderlyingNetwork(mManager): mManager.getActiveNetwork();
+
+	try {
+	    defServer = new InetSocketAddress(InetAddress.getByAddress(new byte[] {(byte)223, 5, 5, 5}), 53);
+	} catch (Exception exception) {
+	}
+
+	if (currentNetwork == null) {
+	    return defServer;
+	}
+
+	LinkProperties linkProperties = mManager.getLinkProperties(currentNetwork);
+	if (linkProperties == null) {
+	    return defServer;
+	}
+
+	List<InetAddress> servers = linkProperties.getDnsServers();
+	if (servers == null) {
+	    return defServer;
+	}
+
+	String hostAddress = null;
+	for (InetAddress server: servers) {
+	    if (server instanceof Inet4Address) {
+		hostAddress = server.getHostAddress();
+		return new InetSocketAddress(hostAddress, 53);
+	    }
+	}
+
+	return defServer;
     }
 
     @Override
@@ -241,15 +354,15 @@ public class ToyVpnRunnable implements Runnable {
         return qType == DNS_A_RECORD;
     }
 
-    public static ByteBuffer generateDnsResponse(ByteBuffer query) {
+    public static ByteBuffer generateDnsResponse(ByteBuffer query, int length) {
         if (query == null || query.remaining() < 12) {
             throw new IllegalArgumentException("Invalid DNS request buffer");
         }
 
-        ByteBuffer response = ByteBuffer.allocate(1512);
+        ByteBuffer response = ByteBuffer.allocate(MAX_PACKET_SIZE);
 	response.put(query.slice());
 	response.flip();
-	System.out.println("limit: " + response.limit());
+	Log.d("HELLO", "generateDnsResponse limit=" + response.limit() + " length=" + length + " limit=" + query.limit());
 
 	byte[] src = new byte[16];
 	byte[] dst = new byte[16];
@@ -269,7 +382,7 @@ public class ToyVpnRunnable implements Runnable {
 	response.put(dstPort);
 	response.put(srcPort);
 
-	short flags = response.getShort(50); 
+	short flags = response.getShort(50);
 	response.putShort(50, (short)0x8180);
 
 	short checksum = response.getShort(46);
@@ -284,8 +397,9 @@ public class ToyVpnRunnable implements Runnable {
 
     static HashMap<Integer, byte[]> mDnsHeaderMap = new HashMap<>();
     private void dnsCachePrepareHeader(ByteBuffer packet) {
-	int xid = packet.getShort(40 + 8);
+	int xid = (0xffff & packet.getShort(40 + 8));
 	byte[] header = new byte[40 + 8 + 2];
+	packet.position(0);
 	packet.get(header);
 	mDnsHeaderMap.put(xid, header);
 
@@ -293,15 +407,18 @@ public class ToyVpnRunnable implements Runnable {
     }
 
     ByteBuffer assembleDnsPacket(ByteBuffer packet, int length) {
-	packet.rewind();
-	int xid = packet.getShort();
+	int xid = (0xffff & packet.getShort(0));
 	ByteBuffer newPacket = ByteBuffer.allocate(length + 48);
 
-	Log.d("HELLO", "assembleDnsPacket xid=" + xid);
-	if (!mDnsHeaderMap.containsKey((Integer)xid)) return null;
+	Log.d("HELLO", "assembleDnsPacket xid=" + xid + " length=" + length);
+	if (!mDnsHeaderMap.containsKey((Integer)xid)) {
+		Log.d("HELLO", "assembleDnsPacket failure xid=" + xid);
+		return null;
+	}
 	newPacket.put(mDnsHeaderMap.get(xid));
 	// newPacket.position(48);
 	// packet.rewind();
+	packet.position(2);
 	packet.limit(length);
 	newPacket.put(packet); 
 	newPacket.flip();
@@ -332,6 +449,109 @@ public class ToyVpnRunnable implements Runnable {
 	newPacket.rewind();
 
 	return newPacket;
+    }
+
+/*
+    memcpy(&target.sin_addr, packet, sizeof(target.sin_addr));
+                tolen = sizeof(target);
+
+                memcpy(flags, limited - sizeof(flags), sizeof(flags));
+                size_t plen = flags[1];
+
+                uint32_t check = checksum(packet + sizeof(ident), htons(plen));
+
+                struct ip6_hdr *ip6 = (struct ip6_hdr *)(packet + sizeof(ident));
+                ip6--;
+                ip6->ip6_ver  = htonl(0x60000000);
+                ip6->ip6_plen = plen;
+                ip6->ip6_limit = 0xff;
+                ip6->ip6_next  = htons(flags[0]);
+
+*/
+    static final byte[] myaddr6 = {0x34, 2, 0x52, (byte)0xe2, 0x76, (byte)0xb5, 0, 0, 0, 0, (byte)0x5e, (byte)0xfe, 10, 101, 0, 10};
+    static int tunnelRead(DatagramChannel tunnel, ByteBuffer packet) throws IOException {
+	packet.position(40);
+	int length = tunnel.read(packet);
+	if (length < 24) {
+		packet.clear();
+		return 0;
+	}
+
+	packet.flip();
+	packet.position(length + 40 - 4);
+	byte version = packet.get();
+	byte proto   = packet.get();
+	short plen   = packet.getShort();
+
+	if (version == 0x68) {
+		byte[] source = new byte[16];
+		packet.position(length + 40 - 20);
+		packet.get(source);
+
+		packet.rewind();
+		packet.putInt(0x280000);
+		packet.putInt(0x60000000);
+		packet.putShort(plen);
+		packet.put(proto);
+		packet.put((byte)0xff);
+		packet.put(source);
+		packet.put(myaddr6);
+		packet.rewind();
+		packet.limit(length + 40 - 20);
+
+		// packet.compact();
+		return packet.limit();
+	}
+
+	return length;
+    }
+
+    static int tunnelWrite(DatagramChannel tunnel, ByteBuffer packet) throws IOException {
+	int length = packet.limit();
+
+	if (length < 40) {
+		packet.clear();
+		return 0;
+	}
+
+	packet.rewind();
+	byte version = packet.get(4);
+	if ((0xf0&version) == 0x60) {
+		packet.limit(length + 20);
+		packet.position(8);
+
+		short plen = packet.getShort();
+		byte proto = packet.get();
+		byte hop   = packet.get();
+
+		byte[] source = new byte[16];
+		packet.get(source);
+
+		byte[] destination = new byte[16];
+		packet.get(destination);
+
+		packet.position(length);
+		packet.put(destination);
+		packet.put((byte)0x60);
+		packet.put(proto);
+		packet.putShort(plen);
+		packet.flip();
+
+		packet.position(40);
+		packet.mark();
+		packet.put(source, 12, 4);
+		packet.reset();
+
+		/*
+		   ByteBuffer outbuffer = packet.compact();
+		   outbuffer.flip();
+		*/
+
+		return tunnel.write(packet);
+	}
+
+	int count = tunnel.write(packet);
+	return count;
     }
 
     private boolean run(SocketAddress server)
@@ -365,15 +585,16 @@ public class ToyVpnRunnable implements Runnable {
             tunnel.configureBlocking(false);
 
             dnsclient = DatagramChannel.open();
-            if (!mService.protect(tunnel.socket())) {
+            if (!mService.protect(dnsclient.socket())) {
                 throw new IllegalStateException("Cannot protect the tunnel");
             }
-            dnsclient.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[] {(byte)223, 5, 5, 5}), 53));
+            dnsclient.connect(getDnsServer(false));
 	    dnsclient.configureBlocking(false);
 
             // Authenticate with server and configure the virtual network interface.
+	    //3402:52e2:76b5::5efe:c0a8:a8b/64
             String parameters = "mtu,1400 address,3402:52e2:76b5::5efe:10.101.0.10,64 dns,64:ff9b::7f09:909"; // handshakeServer(tunnel);
-	    parameters += " address,10.0.2.15,24";
+	    parameters += " address,10.101.0.10,30";
 	    parameters += " route,64:ff9b::,96";
 	    parameters += " route,2000::,48";
 	    parameters += " route,2001:4860:4860::,48";
@@ -405,6 +626,13 @@ public class ToyVpnRunnable implements Runnable {
             long lastReadServerTime = System.currentTimeMillis();
             long lastReadVirtualInterfaceTime = System.currentTimeMillis();
 
+
+	    NetworkRequest networkRequest = new NetworkRequest.Builder()
+		    .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+		    .addCapability(NetworkCapabilities.NET_CAPABILITY_FOREGROUND)
+		    .build();
+	    mManager.registerNetworkCallback(networkRequest, mCallback);
+
             // We keep forwarding packets till something goes wrong.
             //noinspection InfiniteLoopStatement
             while (true) {
@@ -419,7 +647,7 @@ public class ToyVpnRunnable implements Runnable {
 
 		    if (isDnsPacket(packet)) {
 			packet.position(4);
-			ByteBuffer newPacket = generateDnsResponse(packet);
+			ByteBuffer newPacket = generateDnsResponse(packet, length);
 			dnsCachePrepareHeader(newPacket);
 			packet.position(4 + 48);
 			// ifaceOut.write(newPacket.array(), 0, newPacket.limit());
@@ -429,9 +657,9 @@ public class ToyVpnRunnable implements Runnable {
 			packet.position(0);
 			// Write the outgoing packet to the tunnel (server).
 			// packet.position(length + 4);
-			byte val = packet.get(4 + 6);
-			packet.put(4 + 6, (byte)(val ^ (byte)0x5a));
-			tunnel.write(packet);
+			// byte val = packet.get(4 + 6);
+			// packet.put(4 + 6, (byte)(val ^ (byte)0x5a));
+			tunnelWrite(tunnel, packet);
 			packet.clear();
 			if (length > 60)
 			    lastReadVirtualInterfaceTime = System.currentTimeMillis();
@@ -442,12 +670,12 @@ public class ToyVpnRunnable implements Runnable {
                 }
 
                 // Read the incoming packet from the tunnel (server).
-                length = tunnel.read(packet);
+                length = tunnelRead(tunnel, packet);
                 if (length > 0) {
                     // Ignore control messages, which start with zero.
                     if (packet.get(4) != 0) {
-			byte val = packet.get(4 + 6);
-			packet.put(4 + 6, (byte)((val) ^ (byte)(0x5a)));
+			// byte val = packet.get(4 + 6);
+			// packet.put(4 + 6, (byte)((val) ^ (byte)(0x5a)));
                         // Write the incoming packet to the output stream (Virtual Interface).
                         ifaceOut.write(packet.array(), 4, length - 4);
                     } else {
@@ -463,6 +691,8 @@ public class ToyVpnRunnable implements Runnable {
 
 		length = dnsclient.read(packet);
 		if (length > 0) {
+		    packet.flip();
+		    Log.d("HELLO", "dnsclient position=" + packet.position() + " length=" + packet.limit() + " length=" + length);
                     ByteBuffer dnsPacket = assembleDnsPacket(packet, length);
 		    if (dnsPacket != null) {
 			ifaceOut.write(dnsPacket.array(), 0, dnsPacket.limit());
@@ -477,13 +707,16 @@ public class ToyVpnRunnable implements Runnable {
                 // If we are idle or waiting for the network, sleep for a
                 // fraction of time to avoid busy looping.
                 if (idle) {
+			ParcelFileDescriptor tunnelfd = ParcelFileDescriptor.fromDatagramSocket(tunnel.socket());
+			ParcelFileDescriptor dnsclientfd = ParcelFileDescriptor.fromDatagramSocket(dnsclient.socket());
+
 			StructPollfd pollTunnel = new StructPollfd();
 			pollTunnel.events = (short)OsConstants.POLLIN;
-			pollTunnel.fd = ParcelFileDescriptor.fromDatagramSocket(tunnel.socket()).getFileDescriptor();
+			pollTunnel.fd = tunnelfd.getFileDescriptor();
 
 			StructPollfd pollDns = new StructPollfd();
 			pollDns.events = (short)OsConstants.POLLIN;
-			pollDns.fd = ParcelFileDescriptor.fromDatagramSocket(dnsclient.socket()).getFileDescriptor();
+			pollDns.fd = dnsclientfd.getFileDescriptor();
 
 			StructPollfd pollIface = new StructPollfd();
 			pollIface.events = (short)OsConstants.POLLIN;
@@ -494,9 +727,13 @@ public class ToyVpnRunnable implements Runnable {
 				int nPolled = Os.poll(new StructPollfd[]{pollTunnel, pollDns, pollIface}, 1000);
 				if ((pollTunnel.revents & OsConstants.POLLIN) == OsConstants.POLLIN) lastReadServerTime = System.currentTimeMillis();
 			} catch (ErrnoException e) {
+				dnsclientfd.close();
+				tunnelfd.close();
 				throw new IOException("Timed out");
 			}
 
+			dnsclientfd.close();
+			tunnelfd.close();
 			final long timeNow = System.currentTimeMillis();
 
 			if (lastReadVirtualInterfaceTime > lastReadServerTime && lastReadServerTime + RECEIVE_TIMEOUT_MS <= timeNow) {
@@ -509,6 +746,7 @@ public class ToyVpnRunnable implements Runnable {
 				} catch (ErrnoException e) {
 				}
 
+				tunnel.disconnect();
 				tunnel.close();
 				tunnel = DatagramChannel.open();
 				tunnel.setOption(StandardSocketOptions.SO_SNDBUF, 1024 * 1024);
@@ -526,12 +764,13 @@ public class ToyVpnRunnable implements Runnable {
 				// writing. Here we put the tunnel into non-blocking mode.
 				tunnel.configureBlocking(false);
 
+				dnsclient.disconnect();
 				dnsclient.close();
 				dnsclient = DatagramChannel.open();
-				if (!mService.protect(tunnel.socket())) {
+				if (!mService.protect(dnsclient.socket())) {
 					throw new IllegalStateException("Cannot protect the tunnel");
 				}
-				dnsclient.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[] {(byte)223, 5, 5, 5}), 53));
+				dnsclient.connect(getDnsServer(true));
 				dnsclient.configureBlocking(false);
 
 				// throw new IOException("Timed out");
@@ -558,11 +797,14 @@ public class ToyVpnRunnable implements Runnable {
             }
 
             try {
+		mManager.unregisterNetworkCallback(mCallback);
+
                 if (iface != null) {
                     iface.close();
                 }
 		if (dnsclient != null) {
-			dnsclient.close();
+                    dnsclient.disconnect();
+		    dnsclient.close();
 		}
                 if (tunnel != null) {
                     tunnel.disconnect();
