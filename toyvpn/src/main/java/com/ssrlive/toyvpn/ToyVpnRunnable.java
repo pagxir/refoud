@@ -45,8 +45,7 @@ import android.net.Network;
 import java.net.PortUnreachableException;
 import java.net.Inet4Address;
 import android.net.NetworkCapabilities;
-import java.nio.channels.SelectableChannel;
-import java.nio.channels.spi.AbstractSelectableChannel;
+import java.nio.channels.FileChannel;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.SocketException;
@@ -453,134 +452,143 @@ public class ToyVpnRunnable implements Runnable {
 	return newPacket;
     }
 
-    /*
-       memcpy(&target.sin_addr, packet, sizeof(target.sin_addr));
-       tolen = sizeof(target);
+    static class DatagramNetworkChannel {
+	DatagramChannel dataChannel = null;
+	ParcelFileDescriptor descriptor = null;
 
-       memcpy(flags, limited - sizeof(flags), sizeof(flags));
-       size_t plen = flags[1];
+	public static DatagramNetworkChannel build(VpnService service, SocketAddress target) throws IOException {
+	    DatagramChannel tunnel = DatagramChannel.open();
+	    tunnel.setOption(StandardSocketOptions.SO_SNDBUF, 1024 * 1024);
+	    tunnel.setOption(StandardSocketOptions.SO_RCVBUF, 1024 * 1024);
 
-       uint32_t check = checksum(packet + sizeof(ident), htons(plen));
+	    if (!service.protect(tunnel.socket())) {
+		throw new IllegalStateException("Cannot protect the tunnel");
+	    }
 
-       struct ip6_hdr *ip6 = (struct ip6_hdr *)(packet + sizeof(ident));
-       ip6--;
-       ip6->ip6_ver  = htonl(0x60000000);
-       ip6->ip6_plen = plen;
-       ip6->ip6_limit = 0xff;
-       ip6->ip6_next  = htons(flags[0]);
-
-*/
-    static final byte[] myaddr6 = {0x34, 2, 0x52, (byte)0xe2, 0x76, (byte)0xb5, 0, 0, 0, 0, (byte)0x5e, (byte)0xfe, 10, 101, 0, 10};
-    static int tunnelRead(DatagramChannel tunnel, ByteBuffer packet) throws IOException {
-	packet.position(40);
-	int length = tunnel.read(packet);
-	if (length < 24) {
-	    packet.clear();
-	    return 0;
+	    tunnel.connect(target);
+	    tunnel.configureBlocking(false);
+	    return new DatagramNetworkChannel(tunnel);
 	}
 
-	packet.flip();
-	packet.position(length + 40 - 4);
-	byte version = packet.get();
-	byte proto   = packet.get();
-	short plen   = packet.getShort();
-
-	if (version == 0x68) {
-	    byte[] source = new byte[16];
-	    packet.position(length + 40 - 20);
-	    packet.get(source);
-
-	    packet.rewind();
-	    packet.putInt(0x280000);
-	    packet.putInt(0x60000000);
-	    packet.putShort(plen);
-	    packet.put(proto);
-	    packet.put((byte)0xff);
-	    packet.put(source);
-	    packet.put(myaddr6);
-	    packet.rewind();
-	    packet.limit(length + 40 - 20);
-
-	    // packet.compact();
-	    return packet.limit();
+	DatagramNetworkChannel(DatagramChannel channel) {
+	    dataChannel = channel;
+	    descriptor  = ParcelFileDescriptor.fromDatagramSocket(channel.socket());
 	}
 
-	return length;
-    }
-
-    static int tunnelWrite(DatagramChannel tunnel, ByteBuffer packet) throws IOException {
-	int length = packet.limit();
-
-	if (length < 40) {
-	    packet.clear();
-	    return 0;
+	public StructPollfd fillPollfd() {
+	    StructPollfd pollFd = new StructPollfd();
+	    pollFd.events = (short)OsConstants.POLLIN;
+	    pollFd.fd = descriptor.getFileDescriptor();
+	    return pollFd;
 	}
 
-	packet.rewind();
-	byte version = packet.get(4);
-	if ((0xf0&version) == 0x60) {
-	    packet.limit(length + 20);
-	    packet.position(8);
+	public void close() throws IOException {
+	    dataChannel.close();
+	    descriptor.close();
+	}
 
-	    short plen = packet.getShort();
-	    byte proto = packet.get();
-	    byte hop   = packet.get();
+	public int receive(ByteBuffer packet) throws IOException {
+	    return dataChannel.read(packet);
+	}
 
-	    byte[] source = new byte[16];
-	    packet.get(source);
+	public int send(ByteBuffer packet) throws IOException {
+	    return dataChannel.write(packet);
+	}
 
-	    byte[] destination = new byte[16];
-	    packet.get(destination);
-
-	    packet.position(length);
-	    packet.put(destination);
-	    packet.put((byte)0x60);
-	    packet.put(proto);
-	    packet.putShort(plen);
-	    packet.flip();
-
+	static final byte[] myaddr6 = {0x34, 2, 0x52, (byte)0xe2, 0x76, (byte)0xb5, 0, 0, 0, 0, (byte)0x5e, (byte)0xfe, 10, 101, 0, 10};
+	public int read(ByteBuffer packet) throws IOException {
 	    packet.position(40);
-	    packet.mark();
-	    packet.put(source, 12, 4);
-	    packet.reset();
+	    int length = dataChannel.read(packet);
+	    if (length < 24) {
+		packet.clear();
+		return 0;
+	    }
 
-	    /*
-	       ByteBuffer outbuffer = packet.compact();
-	       outbuffer.flip();
-	       */
+	    packet.flip();
+	    packet.position(length + 40 - 4);
+	    byte version = packet.get();
+	    byte proto   = packet.get();
+	    short plen   = packet.getShort();
 
-	    return tunnel.write(packet);
+	    if (version == 0x68) {
+		byte[] source = new byte[16];
+		packet.position(length + 40 - 20);
+		packet.get(source);
+
+		packet.rewind();
+		packet.putInt(0x280000);
+		packet.putInt(0x60000000);
+		packet.putShort(plen);
+		packet.put(proto);
+		packet.put((byte)0xff);
+		packet.put(source);
+		packet.put(myaddr6);
+		packet.rewind();
+		packet.limit(length + 40 - 20);
+
+		// packet.compact();
+		return packet.limit();
+	    }
+
+	    packet.clear();
+	    return 0;
 	}
 
-	int count = tunnel.write(packet);
-	return count;
-    }
+	public int write(ByteBuffer packet) throws IOException {
+	    int length = packet.limit();
 
-    private DatagramChannel buildDatagramChannel(SocketAddress target) throws IOException {
-	DatagramChannel tunnel = DatagramChannel.open();
-	tunnel.setOption(StandardSocketOptions.SO_SNDBUF, 1024 * 1024);
-	tunnel.setOption(StandardSocketOptions.SO_RCVBUF, 1024 * 1024);
+	    if (length < 40) {
+		packet.clear();
+		return 0;
+	    }
 
-	// Protect the tunnel before connecting to avoid loopback.
-	if (!mService.protect(tunnel.socket())) {
-	    throw new IllegalStateException("Cannot protect the tunnel");
+	    packet.rewind();
+	    byte version = packet.get(4);
+	    if ((0xf0&version) == 0x60) {
+		packet.limit(length + 20);
+		packet.position(8);
+
+		short plen = packet.getShort();
+		byte proto = packet.get();
+		byte hop   = packet.get();
+
+		byte[] source = new byte[16];
+		packet.get(source);
+
+		byte[] destination = new byte[16];
+		packet.get(destination);
+
+		packet.position(length);
+		packet.put(destination);
+		packet.put((byte)0x60);
+		packet.put(proto);
+		packet.putShort(plen);
+		packet.flip();
+
+		packet.position(40);
+		packet.mark();
+		packet.put(source, 12, 4);
+		packet.reset();
+
+		/*
+		   ByteBuffer outbuffer = packet.compact();
+		   outbuffer.flip();
+		   */
+
+		return dataChannel.write(packet);
+	    }
+
+	    int count = dataChannel.write(packet);
+	    return count;
 	}
-
-	// Connect to the server.
-	tunnel.connect(target);
-
-	// For simplicity, we use the same thread for both reading and
-	// writing. Here we put the tunnel into non-blocking mode.
-	tunnel.configureBlocking(false);
-	return tunnel;
-    }
+    };
 
     private boolean run(SocketAddress server)
 	    throws InterruptedException, IllegalArgumentException, IllegalStateException {
-	    DatagramChannel tunnel = null;
-	    DatagramChannel dnsclient = null;
-	    DatagramChannel tcpclient = null;
-	    DatagramChannel udpclient = null;
+	    DatagramNetworkChannel tunnel = null;
+	    DatagramNetworkChannel dnsclient = null;
+	    DatagramNetworkChannel tcpclient = null;
+	    DatagramNetworkChannel udpclient = null;
 	    ParcelFileDescriptor iface = null;
 	    boolean success = false;
 	    try {
@@ -590,10 +598,10 @@ public class ToyVpnRunnable implements Runnable {
 		    }
 		}
 
-		tunnel = buildDatagramChannel(server);
-		tcpclient = buildDatagramChannel(server);
-		udpclient = buildDatagramChannel(server);
-		dnsclient = buildDatagramChannel(getDnsServer(false));
+		tunnel = DatagramNetworkChannel.build(mService, server);
+		tcpclient = DatagramNetworkChannel.build(mService, server);
+		udpclient = DatagramNetworkChannel.build(mService, server);
+		dnsclient = DatagramNetworkChannel.build(mService, getDnsServer(false));
 
 		// Authenticate with server and configure the virtual network interface.
 		//3402:52e2:76b5::5efe:c0a8:a8b/64
@@ -617,12 +625,14 @@ public class ToyVpnRunnable implements Runnable {
 
 		// Packets to be sent are queued in this input stream.
 		FileInputStream ifaceIn = new FileInputStream(iface.getFileDescriptor());
+		FileChannel ifaceInChannel = ifaceIn.getChannel();
 
 		// Packets received need to be written to this output stream.
 		FileOutputStream ifaceOut = new FileOutputStream(iface.getFileDescriptor());
+		FileChannel ifaceChannel = ifaceOut.getChannel();
 
 		// Allocate the buffer for a single packet.
-		ByteBuffer packet = ByteBuffer.allocate(MAX_PACKET_SIZE);
+		ByteBuffer packet = ByteBuffer.allocateDirect(MAX_PACKET_SIZE);
 
 		// Timeouts:
 		//   - when data has not been sent in a while, send empty keepalive messages.
@@ -641,10 +651,12 @@ public class ToyVpnRunnable implements Runnable {
 		while (true) {
 		    // Assume that we did not make any progress in this iteration.
 		    boolean idle = true;
+		    boolean uploading = true;
 
 		    // Read the outgoing packet from the input stream (Virtual Interface).
-		    int length = ifaceIn.read(packet.array(), 4, MAX_PACKET_SIZE - 4);
-		    if (length > 0) {
+		    packet.position(4);
+		    int length = ifaceInChannel.read(packet);
+		    while (length > 0) {
 			packet.limit(length + 4);
 			packet.position(4);
 
@@ -654,7 +666,7 @@ public class ToyVpnRunnable implements Runnable {
 			    dnsCachePrepareHeader(newPacket);
 			    packet.position(4 + 48);
 			    // ifaceOut.write(newPacket.array(), 0, newPacket.limit());
-			    dnsclient.write(packet);
+			    dnsclient.send(packet);
 			    packet.clear();
 			} else {
 			    packet.position(0);
@@ -665,18 +677,19 @@ public class ToyVpnRunnable implements Runnable {
 			    //
 			    byte val = packet.get(4 + 6);
 			    switch (val) {
-				case 17:
-				    tunnelWrite(udpclient, packet);
+				case 6:
+				    uploading = (length > 512);
+				    tcpclient.write(packet);
 				    break;
 
-				case 6:
+				case 17:
 				    if (packet.getShort(4 + 40 + 2) != 53) {
-					tunnelWrite(tcpclient, packet);
+					udpclient.write(packet);
 					break;
 				    }
 
 				default:
-				    tunnelWrite(tunnel, packet);
+				    tunnel.write(packet);
 				    break;
 			    }
 			    packet.clear();
@@ -685,21 +698,26 @@ public class ToyVpnRunnable implements Runnable {
 			}
 
 			// There might be more outgoing packets.
-			idle = false;
+			if (uploading) {
+			    packet.position(4);
+			    length = ifaceInChannel.read(packet);
+			    uploading = false;
+			} else {
+			    idle = false;
+			    length = 0;
+			}
 		    }
 
 		    // Read the incoming packet from the tunnel (server).
-		    length = tunnelRead(tunnel, packet);
+		    length = tunnel.read(packet);
 		    if (length > 0) {
 			// Ignore control messages, which start with zero.
 			if (packet.get(4) != 0) {
-			    // byte val = packet.get(4 + 6);
-			    // packet.put(4 + 6, (byte)((val) ^ (byte)(0x5a)));
-			    // Write the incoming packet to the output stream (Virtual Interface).
-			    ifaceOut.write(packet.array(), 4, length - 4);
+			    packet.position(4);
+			    ifaceChannel.write(packet);
 			} else {
 			    // response to remote server with idle packet immediately.
-			    tunnel.write(packet);
+			    tunnel.send(packet);
 			}
 			packet.clear();
 
@@ -708,32 +726,34 @@ public class ToyVpnRunnable implements Runnable {
 			lastReadServerTime = System.currentTimeMillis();
 		    }
 
-		    length = tunnelRead(udpclient, packet);
+		    length = udpclient.read(packet);
 		    if (length > 0) {
-			ifaceOut.write(packet.array(), 4, length - 4);
+			packet.position(4);
+			ifaceChannel.write(packet);
 			packet.clear();
 
 			idle = false;
 			lastReadServerTime = System.currentTimeMillis();
 		    }
 
-		    length = tunnelRead(tcpclient, packet);
+		    length = tcpclient.read(packet);
 		    while (length > 0) {
-			ifaceOut.write(packet.array(), 4, length - 4);
+			packet.position(4);
+			ifaceChannel.write(packet);
 			packet.clear();
 
 			idle = false;
 			lastReadServerTime = System.currentTimeMillis();
-		        length = tunnelRead(tcpclient, packet);
+			length = tcpclient.read(packet);
 		    }
 
-		    length = dnsclient.read(packet);
+		    length = dnsclient.receive(packet);
 		    if (length > 0) {
 			packet.flip();
 			Log.d("HELLO", "dnsclient position=" + packet.position() + " length=" + packet.limit() + " length=" + length);
 			ByteBuffer dnsPacket = assembleDnsPacket(packet, length);
 			if (dnsPacket != null) {
-			    ifaceOut.write(dnsPacket.array(), 0, dnsPacket.limit());
+			    ifaceChannel.write(dnsPacket);
 			}
 
 			packet.clear();
@@ -745,26 +765,11 @@ public class ToyVpnRunnable implements Runnable {
 		    // If we are idle or waiting for the network, sleep for a
 		    // fraction of time to avoid busy looping.
 		    if (idle) {
-			ParcelFileDescriptor tunnelfd = ParcelFileDescriptor.fromDatagramSocket(tunnel.socket());
-			ParcelFileDescriptor dnsclientfd = ParcelFileDescriptor.fromDatagramSocket(dnsclient.socket());
-			ParcelFileDescriptor tcpclientfd = ParcelFileDescriptor.fromDatagramSocket(tcpclient.socket());
-			ParcelFileDescriptor udpclientfd = ParcelFileDescriptor.fromDatagramSocket(udpclient.socket());
-
-			StructPollfd pollTunnel = new StructPollfd();
-			pollTunnel.events = (short)OsConstants.POLLIN;
-			pollTunnel.fd = tunnelfd.getFileDescriptor();
-
-			StructPollfd pollDns = new StructPollfd();
-			pollDns.events = (short)OsConstants.POLLIN;
-			pollDns.fd = dnsclientfd.getFileDescriptor();
-
-			StructPollfd pollTcp = new StructPollfd();
-			pollTcp.events = (short)OsConstants.POLLIN;
-			pollTcp.fd = tcpclientfd.getFileDescriptor();
-
-			StructPollfd pollUdp = new StructPollfd();
-			pollUdp.events = (short)OsConstants.POLLIN;
-			pollUdp.fd = udpclientfd.getFileDescriptor();
+			int nPolled = 0;
+			StructPollfd pollTunnel = tunnel.fillPollfd();
+			StructPollfd pollDns = dnsclient.fillPollfd();
+			StructPollfd pollTcp = tcpclient.fillPollfd();
+			StructPollfd pollUdp = udpclient.fillPollfd();
 
 			StructPollfd pollIface = new StructPollfd();
 			pollIface.events = (short)OsConstants.POLLIN;
@@ -772,14 +777,11 @@ public class ToyVpnRunnable implements Runnable {
 
 			//noinspection BusyWait
 			try {
-			    int nPolled = Os.poll(new StructPollfd[]{pollTunnel, pollDns, pollTcp, pollUdp, pollIface}, 1000);
-			    if ((pollTunnel.revents & OsConstants.POLLIN) == OsConstants.POLLIN) lastReadServerTime = System.currentTimeMillis();
+			    nPolled = Os.poll(new StructPollfd[]{pollTunnel, pollDns, pollTcp, pollUdp, pollIface}, 1000);
+			    // if ((pollTunnel.revents & OsConstants.POLLIN) == OsConstants.POLLIN) lastReadServerTime = System.currentTimeMillis();
+			    if (nPolled > 0) lastReadServerTime = System.currentTimeMillis();
 			} catch (ErrnoException e) {
-			    dnsclientfd.close();
-			    tcpclientfd.close();
-			    udpclientfd.close();
-			    tunnelfd.close();
-			    throw new IOException("Timed out");
+			    throw new IOException("Timed out 0");
 			}
 
 			final long timeNow = System.currentTimeMillis();
@@ -790,34 +792,23 @@ public class ToyVpnRunnable implements Runnable {
 			    lastReadServerTime = System.currentTimeMillis();
 
 			    try {
-				int nPolled = Os.poll(new StructPollfd[]{pollTunnel, pollDns, pollIface}, 3600000);
+				nPolled = Os.poll(new StructPollfd[]{pollTunnel, pollDns, pollTcp, pollUdp, pollIface}, 3600000);
 			    } catch (ErrnoException e) {
+				throw new IOException("Timed out 1");
 			    }
 
-			    tunnel.disconnect();
-			    tunnel.close();
+			    if (nPolled == 0) {
+				tcpclient.close();
+				udpclient.close();
+				dnsclient.close();
+				tunnel.close();
 
-			    tcpclient.disconnect();
-			    tcpclient.close();
-
-			    udpclient.disconnect();
-			    udpclient.close();
-
-			    dnsclient.disconnect();
-			    dnsclient.close();
-
-			    tunnel = buildDatagramChannel(server);
-			    tcpclient = buildDatagramChannel(server);
-			    udpclient = buildDatagramChannel(server);
-			    dnsclient = buildDatagramChannel(getDnsServer(true));
-
-			    // throw new IOException("Timed out");
+				tunnel = DatagramNetworkChannel.build(mService, server);
+				tcpclient = DatagramNetworkChannel.build(mService, server);
+				udpclient = DatagramNetworkChannel.build(mService, server);
+				dnsclient = DatagramNetworkChannel.build(mService, getDnsServer(true));
+			    }
 			}
-
-			dnsclientfd.close();
-			tcpclientfd.close();
-			udpclientfd.close();
-			tunnelfd.close();
 
 			if (lastReadServerTime + KEEPALIVE_INTERVAL_MS <= timeNow) {
 			    // We are receiving for a long time but not sending.
@@ -850,22 +841,18 @@ public class ToyVpnRunnable implements Runnable {
 		    }
 
 		    if (dnsclient != null) {
-			dnsclient.disconnect();
 			dnsclient.close();
 		    }
 
 		    if (tcpclient != null) {
-			tcpclient.disconnect();
 			tcpclient.close();
 		    }
 
 		    if (udpclient != null) {
-			udpclient.disconnect();
 			udpclient.close();
 		    }
 
 		    if (tunnel != null) {
-			tunnel.disconnect();
 			tunnel.close();
 		    }
 		} catch (Exception e) {

@@ -167,7 +167,8 @@ public class ToyVpnClient extends Activity {
                 .putInt(Prefs.PROXY_PORT, proxyPortNum)
                 .putBoolean(Prefs.ALLOW, allowed.isChecked())
                 .putStringSet(Prefs.PACKAGES, packageSet)
-                .apply();
+                .commit();
+                // .apply();
     }
 
     private boolean checkProxyConfigs(String proxyHost, String proxyPort) {
