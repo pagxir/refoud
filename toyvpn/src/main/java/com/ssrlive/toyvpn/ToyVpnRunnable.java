@@ -161,6 +161,7 @@ public class ToyVpnRunnable implements Runnable {
 	mOnConnectListener = listener;
     }
 
+    boolean networkChange = true;
     Map<String, Network> networkMap = new HashMap<>();
     final ConnectivityManager.NetworkCallback mCallback = new ConnectivityManager.NetworkCallback() {
 
@@ -171,6 +172,8 @@ public class ToyVpnRunnable implements Runnable {
 	    Log.d(LOG_TAG, "NetworkStateCallback.onAvailable " + netId);
 
 	    networkMap.put(netId, network);
+	    networkChange = true;
+	    // oldThread.interrupt();
 	}
 
 	@Override
@@ -187,6 +190,8 @@ public class ToyVpnRunnable implements Runnable {
 	    super.onCapabilitiesChanged(network, capabilities);
 	    String netId = network.toString();
 	    Log.d(LOG_TAG, "NetworkStateCallback.onCapabilitiesChanged " + netId);
+	    networkChange = true;
+	    // oldThread.interrupt();
 	}
     };
 
@@ -510,7 +515,33 @@ public class ToyVpnRunnable implements Runnable {
 	    byte proto   = packet.get();
 	    short plen   = packet.getShort();
 
-	    if (version == 0x68) {
+	    if (version == (byte)0x97) {
+		byte[] source = new byte[16];
+		packet.position(length + 40 - 20);
+		packet.get(source);
+
+		packet.rewind();
+		packet.putInt(0x280000);
+		packet.putInt(0x60000000);
+		packet.putShort(plen);
+		packet.put(proto);
+		packet.put((byte)0xff);
+		packet.put(source);
+		packet.put(myaddr6);
+		int base = packet.position();
+		packet.rewind();
+
+		for (int i = 0; i < plen; i++) {
+			byte code = packet.get(i + base);
+			packet.put(i + base, (byte)(code ^  0x0f));
+		}
+
+		packet.limit(length + 40 - 20);
+
+		// packet.compact();
+		return packet.limit();
+
+	    } else if (version == 0x68) {
 		byte[] source = new byte[16];
 		packet.position(length + 40 - 20);
 		packet.get(source);
@@ -531,56 +562,71 @@ public class ToyVpnRunnable implements Runnable {
 	    }
 
 	    packet.clear();
-	    return 0;
-	}
+            return 0;
+        }
 
-	public int write(ByteBuffer packet) throws IOException {
-	    int length = packet.limit();
+        public int write(ByteBuffer packet) throws IOException {
+            int length = packet.limit();
 
-	    if (length < 40) {
-		packet.clear();
-		return 0;
-	    }
+            if (length < 40) {
+                packet.clear();
+                return 0;
+            }
 
-	    packet.rewind();
-	    byte version = packet.get(4);
-	    if ((0xf0&version) == 0x60) {
-		packet.limit(length + 20);
-		packet.position(8);
+            packet.rewind();
+            byte version = packet.get(4);
+            if ((0xf0 & version) == 0x60) {
+                packet.limit(length + 20);
+                packet.position(8);
 
-		short plen = packet.getShort();
-		byte proto = packet.get();
-		byte hop   = packet.get();
+                short plen = packet.getShort();
+                byte proto = packet.get();
+                byte hop   = packet.get();
 
-		byte[] source = new byte[16];
-		packet.get(source);
+                byte[] source = new byte[16];
+                packet.get(source);
 
-		byte[] destination = new byte[16];
-		packet.get(destination);
+                byte[] destination = new byte[16];
+                packet.get(destination);
+
+                int base = packet.position();
+                short sport = packet.getShort();
+                short dport = packet.getShort();
+
+
+		byte tagid = 0x60;
+                if (proto == 17 && dport == 53) {
+		    tagid = (byte)0x9f;
+                } else if (proto == 6 && dport == 443) {
+		    tagid = (byte)0x9f;
+                } else if (proto == 6 && dport == 80) {
+		    tagid = (byte)0x9f;
+		}
 
 		packet.position(length);
 		packet.put(destination);
-		packet.put((byte)0x60);
+		packet.put(tagid);
 		packet.put(proto);
 		packet.putShort(plen);
 		packet.flip();
+
+		int xorlen = (tagid == (byte)0x9f? plen: 0);
+		for (int i = 0; i < xorlen; i++) {
+		    byte code = packet.get(base + i);
+		    packet.put(base + i, (byte)(code ^ 0xf));
+		}
 
 		packet.position(40);
 		packet.mark();
 		packet.put(source, 12, 4);
 		packet.reset();
 
-		/*
-		   ByteBuffer outbuffer = packet.compact();
-		   outbuffer.flip();
-		   */
+                return dataChannel.write(packet);
+            }
 
-		return dataChannel.write(packet);
-	    }
-
-	    int count = dataChannel.write(packet);
-	    return count;
-	}
+            int count = dataChannel.write(packet);
+            return count;
+        }
     };
 
     private boolean run(SocketAddress server)
@@ -762,9 +808,20 @@ public class ToyVpnRunnable implements Runnable {
 			idle = false;
 		    }
 
-		    // If we are idle or waiting for the network, sleep for a
-		    // fraction of time to avoid busy looping.
-		    if (idle) {
+		    if (networkChange) {
+			networkChange = false;
+			tcpclient.close();
+			udpclient.close();
+			dnsclient.close();
+			tunnel.close();
+
+			tunnel = DatagramNetworkChannel.build(mService, server);
+			tcpclient = DatagramNetworkChannel.build(mService, server);
+			udpclient = DatagramNetworkChannel.build(mService, server);
+			dnsclient = DatagramNetworkChannel.build(mService, getDnsServer(true));
+			// If we are idle or waiting for the network, sleep for a
+			// fraction of time to avoid busy looping.
+		    } else if (idle) {
 			int nPolled = 0;
 			StructPollfd pollTunnel = tunnel.fillPollfd();
 			StructPollfd pollDns = dnsclient.fillPollfd();
@@ -798,15 +855,7 @@ public class ToyVpnRunnable implements Runnable {
 			    }
 
 			    if (nPolled == 0) {
-				tcpclient.close();
-				udpclient.close();
-				dnsclient.close();
-				tunnel.close();
-
-				tunnel = DatagramNetworkChannel.build(mService, server);
-				tcpclient = DatagramNetworkChannel.build(mService, server);
-				udpclient = DatagramNetworkChannel.build(mService, server);
-				dnsclient = DatagramNetworkChannel.build(mService, getDnsServer(true));
+				networkChange = true;
 			    }
 			}
 
