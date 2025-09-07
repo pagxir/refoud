@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.ssrlive.toyvpn;
+package net.cachefiles.toyvpn;
 
 import android.annotation.TargetApi;
 import android.app.Notification;
@@ -27,6 +27,8 @@ import android.net.VpnService;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Message;
+import android.os.IBinder;
+import android.os.RemoteException;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 import android.widget.Toast;
@@ -40,8 +42,8 @@ import java.util.concurrent.atomic.AtomicReference;
 public class ToyVpnService extends VpnService {
     private static final String TAG = ToyVpnService.class.getSimpleName();
 
-    public static final String ACTION_CONNECT = "com.ssrlive.toyvpn.START";
-    public static final String ACTION_DISCONNECT = "com.ssrlive.toyvpn.STOP";
+    public static final String ACTION_CONNECT = "net.cachefiles.toyvpn.START";
+    public static final String ACTION_DISCONNECT = "net.cachefiles.toyvpn.STOP";
 
     private Handler mHandler;
 
@@ -49,6 +51,23 @@ public class ToyVpnService extends VpnService {
     private final AtomicInteger mNextConnectionId = new AtomicInteger(1);
 
     private PendingIntent mConfigureIntent;
+
+    private IBinder mBinder = new IToyVpnAidl.Stub() {
+        @Override
+        public void basicTypes(int anInt, long aLong, boolean aBoolean, float aFloat, double aDouble, String aString) throws RemoteException {
+
+        }
+
+        @Override
+        public boolean connected() {
+            return false;
+        }
+    };
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return mBinder;
+    }
 
     @Override
     public void onCreate() {

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.ssrlive.toyvpn;
+package net.cachefiles.toyvpn;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
