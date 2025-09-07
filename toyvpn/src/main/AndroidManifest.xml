@@ -21,7 +21,8 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
 
-     <application android:label="@string/app" android:extractNativeLibs="true">
+    <application
+	android:label="@string/app" android:extractNativeLibs="true">
 
 	     <!--
         <activity android:name=".ToyVpnClient"
@@ -36,6 +37,7 @@
 	     -->
 
         <activity android:name=".ToyVpnSettings"
+	    android:theme="@style/Theme.AppCompat"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>

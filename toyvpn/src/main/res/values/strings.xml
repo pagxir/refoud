@@ -30,6 +30,10 @@
     <string name="allowed">Allow</string>
     <string name="disallowed">Disallow</string>
 
+    <string name="host_title">Host</string>
+    <string name="port_title">Port</string>
+    <string name="config_header">Config</string>
+
     <string name="launching">ToyVPN is launching...</string>
     <string name="connecting">ToyVPN is connecting...</string>
     <string name="connected">ToyVPN is connected!</string>

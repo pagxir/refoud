@@ -20,9 +20,15 @@ import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.ServiceConnection;
+import android.content.ComponentName;
+import android.content.Context;
+
 import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.IBinder;
+import android.util.Log;
 import android.widget.RadioButton;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -34,6 +40,8 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 public class ToyVpnClient extends Activity {
+    final static String LOG_TAG = "ToyVpn";
+
     public interface Prefs {
         String NAME = "connection";
         String SERVER_ADDRESS = "server.address";
@@ -55,6 +63,21 @@ public class ToyVpnClient extends Activity {
     TextView packages;
 
     SharedPreferences prefs;
+
+    private ServiceConnection mConnection = new ServiceConnection() {
+        IToyVpnAidl mAidl = null;
+
+        @Override
+        public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
+            Log.d(LOG_TAG, "onServiceConnected");
+            mAidl = IToyVpnAidl.Stub.asInterface(iBinder);
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName componentName) {
+            Log.d(LOG_TAG, "onServiceDisconnected");
+        }
+    };
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -190,6 +213,24 @@ public class ToyVpnClient extends Activity {
             Toast.makeText(this, R.string.unknown_package_names, Toast.LENGTH_SHORT).show();
         }
         return hasCorrectPackageNames;
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        Log.d(LOG_TAG, "onResume");
+
+        final Intent intent = new Intent();
+        intent.setClassName("net.cachefiles.toyvpn", "net.cachefiles.toyvpn.ToyVpnService");
+        bindService(intent, mConnection, Context.BIND_AUTO_CREATE);
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        Log.d(LOG_TAG, "onPause");
+
+        unbindService(mConnection);
     }
 
     @Override

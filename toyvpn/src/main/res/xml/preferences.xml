@@ -1,9 +1,18 @@
 <PreferenceScreen
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
+    <PreferenceCategory app:title="@string/config_header">
+        <EditTextPreference
+            app:key="host"
+            app:title="@string/host_title" />
+        <EditTextPreference
+            app:key="port"
+            app:title="@string/port_title" />
+    </PreferenceCategory>
+
     <SwitchPreferenceCompat
-        app:key="notifications"
-        app:title="Enable message notifications"/>
+	    app:key="switch"
+	    app:title="Turn VPN on/off"/>
 
     <Preference
         app:key="feedback"
