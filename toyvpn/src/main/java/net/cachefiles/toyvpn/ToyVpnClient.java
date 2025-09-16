@@ -42,7 +42,7 @@ import java.util.stream.Collectors;
 public class ToyVpnClient extends Activity {
     final static String LOG_TAG = "ToyVpn";
 
-    public interface Prefs {
+    public static interface Prefs {
         String NAME = "connection";
         String SERVER_ADDRESS = "server.address";
         String SERVER_PORT = "server.port";

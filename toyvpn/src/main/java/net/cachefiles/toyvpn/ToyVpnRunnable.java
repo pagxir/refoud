@@ -229,6 +229,10 @@ public class ToyVpnRunnable implements Runnable {
 	return underlyingNetwork;
     }
 
+    private int mLinkMtu = 1500;
+    private int mPeerMtu = 1500;
+    private int mHeadlen = 40 + 8 + 24 - 40;
+
     public InetSocketAddress getDnsServer(boolean next) {
 	InetSocketAddress defServer = null;
 	Network currentNetwork = next? getUnderlyingNetwork(mManager): mManager.getActiveNetwork();
@@ -246,6 +250,10 @@ public class ToyVpnRunnable implements Runnable {
 	if (linkProperties == null) {
 	    return defServer;
 	}
+
+	int linkMtu = linkProperties.getMtu();
+	if (linkMtu > 0)
+		mLinkMtu = linkMtu;
 
 	List<InetAddress> servers = linkProperties.getDnsServers();
 	if (servers == null) {
@@ -475,15 +483,16 @@ public class ToyVpnRunnable implements Runnable {
 	    return new DatagramNetworkChannel(tunnel);
 	}
 
+	StructPollfd pollFd = new StructPollfd();
 	DatagramNetworkChannel(DatagramChannel channel) {
 	    dataChannel = channel;
 	    descriptor  = ParcelFileDescriptor.fromDatagramSocket(channel.socket());
+
+	    pollFd.events = (short)OsConstants.POLLIN;
+	    pollFd.fd = descriptor.getFileDescriptor();
 	}
 
 	public StructPollfd fillPollfd() {
-	    StructPollfd pollFd = new StructPollfd();
-	    pollFd.events = (short)OsConstants.POLLIN;
-	    pollFd.fd = descriptor.getFileDescriptor();
 	    return pollFd;
 	}
 
@@ -500,6 +509,7 @@ public class ToyVpnRunnable implements Runnable {
 	    return dataChannel.write(packet);
 	}
 
+	byte[] source = new byte[16];
 	static final byte[] myaddr6 = {0x34, 2, 0x52, (byte)0xe2, 0x76, (byte)0xb5, 0, 0, 0, 0, (byte)0x5e, (byte)0xfe, 10, 101, 0, 10};
 	public int read(ByteBuffer packet) throws IOException {
 	    packet.position(40);
@@ -516,7 +526,6 @@ public class ToyVpnRunnable implements Runnable {
 	    short plen   = packet.getShort();
 
 	    if (version == (byte)0x97) {
-		byte[] source = new byte[16];
 		packet.position(length + 40 - 20);
 		packet.get(source);
 
@@ -542,7 +551,6 @@ public class ToyVpnRunnable implements Runnable {
 		return packet.limit();
 
 	    } else if (version == 0x68) {
-		byte[] source = new byte[16];
 		packet.position(length + 40 - 20);
 		packet.get(source);
 
@@ -565,6 +573,7 @@ public class ToyVpnRunnable implements Runnable {
             return 0;
         }
 
+	byte[] destination = new byte[16];
         public int write(ByteBuffer packet) throws IOException {
             int length = packet.limit();
 
@@ -583,10 +592,8 @@ public class ToyVpnRunnable implements Runnable {
                 byte proto = packet.get();
                 byte hop   = packet.get();
 
-                byte[] source = new byte[16];
                 packet.get(source);
 
-                byte[] destination = new byte[16];
                 packet.get(destination);
 
                 int base = packet.position();
@@ -600,6 +607,8 @@ public class ToyVpnRunnable implements Runnable {
                 } else if (proto == 6 && dport == 443) {
 		    tagid = (byte)0x9f;
                 } else if (proto == 6 && dport == 80) {
+		    tagid = (byte)0x9f;
+		} else if (proto == 58) {
 		    tagid = (byte)0x9f;
 		}
 
@@ -651,13 +660,16 @@ public class ToyVpnRunnable implements Runnable {
 
 		// Authenticate with server and configure the virtual network interface.
 		//3402:52e2:76b5::5efe:c0a8:a8b/64
-		String parameters = "mtu,1400 address,3402:52e2:76b5::5efe:10.101.0.10,64 dns,64:ff9b::7f09:909"; // handshakeServer(tunnel);
+		String parameters = "address,3402:52e2:76b5::5efe:10.101.0.10,64 dns,64:ff9b::7f09:909"; // handshakeServer(tunnel);
 		parameters += " address,10.101.0.10,30";
 		parameters += " route,64:ff9b::,96";
 		parameters += " route,2000::,48";
 		parameters += " route,2001:4860:4860::,48";
+		parameters += " mtu," + String.valueOf(mLinkMtu - mHeadlen);
+		Log.i(getTag(), "config (" + parameters + ")");
 
 		iface = configureVirtualInterface(parameters);
+		mPeerMtu = mLinkMtu;
 		Log.i(getTag(), "New interface: " + iface + " (" + parameters + ")");
 
 		synchronized (mService) {
@@ -691,6 +703,11 @@ public class ToyVpnRunnable implements Runnable {
 		    .addCapability(NetworkCapabilities.NET_CAPABILITY_FOREGROUND)
 		    .build();
 		mManager.registerNetworkCallback(networkRequest, mCallback);
+
+		StructPollfd pollIface = new StructPollfd();
+		pollIface.events = (short)OsConstants.POLLIN;
+		pollIface.fd = iface.getFileDescriptor();
+		StructPollfd[] structPollfds = new StructPollfd[5];
 
 		// We keep forwarding packets till something goes wrong.
 		//noinspection InfiniteLoopStatement
@@ -819,43 +836,37 @@ public class ToyVpnRunnable implements Runnable {
 			tcpclient = DatagramNetworkChannel.build(mService, server);
 			udpclient = DatagramNetworkChannel.build(mService, server);
 			dnsclient = DatagramNetworkChannel.build(mService, getDnsServer(true));
-			// If we are idle or waiting for the network, sleep for a
-			// fraction of time to avoid busy looping.
+			if (mLinkMtu != mPeerMtu)
+			    throw new IOException("Timed out 0");
 		    } else if (idle) {
 			int nPolled = 0;
-			StructPollfd pollTunnel = tunnel.fillPollfd();
-			StructPollfd pollDns = dnsclient.fillPollfd();
-			StructPollfd pollTcp = tcpclient.fillPollfd();
-			StructPollfd pollUdp = udpclient.fillPollfd();
-
-			StructPollfd pollIface = new StructPollfd();
-			pollIface.events = (short)OsConstants.POLLIN;
-			pollIface.fd = iface.getFileDescriptor();
+			structPollfds[0] = tunnel.fillPollfd();
+			structPollfds[1] = dnsclient.fillPollfd();
+			structPollfds[2] = tcpclient.fillPollfd();
+			structPollfds[3] = udpclient.fillPollfd();
+			structPollfds[4] = pollIface;
 
 			//noinspection BusyWait
 			try {
-			    nPolled = Os.poll(new StructPollfd[]{pollTunnel, pollDns, pollTcp, pollUdp, pollIface}, 1000);
+
+			    nPolled = Os.poll(structPollfds, 1000);
 			    // if ((pollTunnel.revents & OsConstants.POLLIN) == OsConstants.POLLIN) lastReadServerTime = System.currentTimeMillis();
 			    if (nPolled > 0) lastReadServerTime = System.currentTimeMillis();
 			} catch (ErrnoException e) {
 			    throw new IOException("Timed out 0");
 			}
 
-			final long timeNow = System.currentTimeMillis();
+			long timeNow = System.currentTimeMillis();
 
 			if (lastReadVirtualInterfaceTime > lastReadServerTime && lastReadServerTime + RECEIVE_TIMEOUT_MS <= timeNow) {
-			    // We are sending for a long time but not receiving.
-			    lastReadVirtualInterfaceTime = System.currentTimeMillis();
 			    lastReadServerTime = System.currentTimeMillis();
+			    lastReadVirtualInterfaceTime = System.currentTimeMillis();
 
 			    try {
-				nPolled = Os.poll(new StructPollfd[]{pollTunnel, pollDns, pollTcp, pollUdp, pollIface}, 3600000);
+				nPolled = Os.poll(structPollfds, 3600000);
+				if (nPolled == 0) networkChange = true;
 			    } catch (ErrnoException e) {
 				throw new IOException("Timed out 1");
-			    }
-
-			    if (nPolled == 0) {
-				networkChange = true;
 			    }
 			}
 

@@ -36,6 +36,9 @@ import android.widget.Toast;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.Set;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -62,6 +65,38 @@ public class ToyVpnService extends VpnService {
         public boolean connected() {
             return false;
         }
+
+	final String packageList = "com.eg.android.AlipayGphone,com.eastmoney.android.berlin,com.alibaba.android.rimet";
+
+	private Set<String> checkPackages(Set<String> packageNames) {
+	    return 
+		getPackageManager().getInstalledPackages(0).stream()
+		.map(pi -> pi.packageName)
+		.filter(name -> packageNames.contains(name))
+		.collect(Collectors.toSet());
+	}
+
+	@Override
+	public void saveServer(String  server, int port) {
+	    Set<String> packageSet = new HashSet<String>();
+	    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+		packageSet = Arrays.stream(packageList.split(","))
+		    .map(String::trim)
+		    .filter(s -> !s.isEmpty())
+		    .collect(Collectors.toSet());
+		packageSet = checkPackages(packageSet);
+	    }
+
+	    SharedPreferences prefs;
+	    prefs = getSharedPreferences(ToyVpnClient.Prefs.NAME, MODE_PRIVATE);
+	    prefs.edit()
+		.putString(ToyVpnClient.Prefs.SERVER_ADDRESS, server)
+		.putInt(ToyVpnClient.Prefs.SERVER_PORT, port)
+		.putStringSet(ToyVpnClient.Prefs.PACKAGES, packageSet)
+		.commit();
+
+                // .apply();
+	}
     };
 
     @Override
@@ -120,7 +155,7 @@ public class ToyVpnService extends VpnService {
         final SharedPreferences prefs = getSharedPreferences(ToyVpnClient.Prefs.NAME, MODE_PRIVATE);
         final String server = prefs.getString(ToyVpnClient.Prefs.SERVER_ADDRESS, "");
         final byte[] secret = prefs.getString(ToyVpnClient.Prefs.SHARED_SECRET, "").getBytes();
-        final boolean allow = prefs.getBoolean(ToyVpnClient.Prefs.ALLOW, true);
+        final boolean allow = prefs.getBoolean(ToyVpnClient.Prefs.ALLOW, false);
         final Set<String> packages =
                 prefs.getStringSet(ToyVpnClient.Prefs.PACKAGES, Collections.emptySet());
         final int port = prefs.getInt(ToyVpnClient.Prefs.SERVER_PORT, 0);
