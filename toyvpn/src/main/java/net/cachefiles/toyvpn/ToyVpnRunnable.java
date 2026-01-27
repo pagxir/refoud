@@ -240,6 +240,25 @@ public class ToyVpnRunnable implements Runnable {
     private int mLinkMtu = 1500;
     private int mPeerMtu = 1500;
     private int mHeadlen = 40 + 8 + 28 - 40;
+    private static final int IPV4_HEADER_LENGTH = 20;
+    private static final String[] GOOGLE_IPV4_ROUTES = {
+	"8.8.4.0,24",
+	"8.8.8.0,24",
+	"64.233.160.0,19",
+	"66.102.0.0,20",
+	"66.249.64.0,19",
+	"72.14.192.0,18",
+	"74.125.0.0,16",
+	"108.177.8.0,21",
+	"108.177.96.0,19",
+	"142.250.0.0,15",
+	"172.217.0.0,16",
+	"172.253.0.0,16",
+	"173.194.0.0,16",
+	"209.85.128.0,17",
+	"216.58.192.0,19",
+	"216.239.32.0,19"
+    };
 
     public InetSocketAddress getDnsServer(boolean next) {
 	InetSocketAddress defServer = null;
@@ -486,6 +505,26 @@ public class ToyVpnRunnable implements Runnable {
 	return newPacket;
     }
 
+    private static boolean isIpv4Local(byte[] address) {
+	int first = address[0] & 0xff;
+	int second = address[1] & 0xff;
+	return first == 10 || (first == 172 && second >= 16 && second <= 31) || (first == 192 && second == 168);
+    }
+
+    private static short ipv4HeaderChecksum(ByteBuffer packet, int offset) {
+	int sum = 0;
+	for (int i = 0; i < IPV4_HEADER_LENGTH; i += 2) {
+	    if (i == 10) {
+		continue;
+	    }
+	    sum += packet.getShort(offset + i) & 0xffff;
+	}
+	while ((sum >> 16) != 0) {
+	    sum = (sum & 0xffff) + (sum >> 16);
+	}
+	return (short)~sum;
+    }
+
     static class DatagramNetworkChannel {
 	DatagramChannel dataChannel = null;
 	ParcelFileDescriptor descriptor = null;
@@ -536,6 +575,7 @@ public class ToyVpnRunnable implements Runnable {
 
 	byte[] source = new byte[16];
 	static final byte[] myaddr6 = {0x34, 2, 0x52, (byte)0xe2, 0x76, (byte)0xb5, 0, 0, 0, 0, (byte)0x5e, (byte)0xfe, 10, 63, (byte)249, 107};
+	static int ipv4Ident = 0;
 	public int read(ByteBuffer packet) throws IOException {
 	    int reserve = 40;
 
@@ -551,8 +591,45 @@ public class ToyVpnRunnable implements Runnable {
 	    byte version = packet.get();
 	    byte proto   = packet.get();
 	    short plen   = packet.getShort();
+	    int payloadLength = plen & 0xffff;
 
-	    if (version == (byte)0x97) {
+	    if (version == (byte)0xb7 || version == 0x48 || version == 0x40 || version == (byte)0xbf) {
+		boolean encrypted = version == (byte)0xb7 || version == (byte)0xbf;
+		byte[] sourceAddr = new byte[4];
+		byte[] destinationAddr = new byte[4];
+
+		packet.position(reserve);
+		packet.get(destinationAddr);
+		packet.position(packet.limit() - 8);
+		packet.get(sourceAddr);
+
+		packet.position(packet.limit() - payloadLength - IPV4_HEADER_LENGTH - 8);
+		packet.mark();
+		packet.put((byte)0x45);
+		packet.put((byte)0);
+		packet.putShort((short)(payloadLength + IPV4_HEADER_LENGTH));
+		packet.putShort((short)(ipv4Ident++));
+		packet.putShort((short)(proto == 6 ? 0x4000 : 0));
+		packet.put((byte)0xff);
+		packet.put(proto);
+		packet.putShort((short)0);
+		packet.put(sourceAddr);
+		packet.put(destinationAddr);
+		int headerStart = packet.position() - IPV4_HEADER_LENGTH;
+		packet.putShort(headerStart + 10, ipv4HeaderChecksum(packet, headerStart));
+		int base = packet.position();
+
+		if (encrypted) {
+		    for (int i = 0; i < payloadLength; i++) {
+			byte code = packet.get(i + base);
+			packet.put(i + base, (byte)(code ^ 0x0f));
+		    }
+		}
+
+		packet.reset();
+		packet.limit(base + payloadLength);
+		return packet.limit();
+	    } else if (version == (byte)0x97) {
 		packet.position(packet.limit() - 20);
 		packet.get(source);
 
@@ -605,16 +682,92 @@ public class ToyVpnRunnable implements Runnable {
         }
 
 	byte[] destination = new byte[16];
+	byte[] source4 = new byte[4];
+	byte[] destination4 = new byte[4];
         public int write(ByteBuffer packet) throws IOException {
 	    int position = packet.position();
 
-            if (packet.remaining() < 40) {
+            if (packet.remaining() < IPV4_HEADER_LENGTH) {
                 packet.clear();
                 return 0;
             }
 
             byte version = packet.get();
-            if ((0xf0 & version) == 0x60) {
+            if ((0xf0 & version) == 0x40) {
+		packet.position(position + 2);
+		short totalLength = packet.getShort();
+		int totalLengthUnsigned = totalLength & 0xffff;
+		packet.position(position + 9);
+		byte proto = packet.get();
+		packet.position(position + 12);
+		packet.get(source4);
+		packet.get(destination4);
+
+		int headerLength = (version & 0x0f) * 4;
+		if (headerLength < IPV4_HEADER_LENGTH || packet.limit() - position < headerLength) {
+		    packet.clear();
+		    return 0;
+		}
+
+		int base = position + headerLength;
+		if (packet.limit() - position < totalLengthUnsigned || totalLengthUnsigned < headerLength + 4) {
+		    packet.clear();
+		    return 0;
+		}
+		packet.position(base);
+		packet.getShort();
+		short dport = packet.getShort();
+		int plen = totalLengthUnsigned - headerLength;
+		if (plen < 0) {
+		    packet.clear();
+		    return 0;
+		}
+		byte tagid = 0x40;
+		boolean encrypted = false;
+		if (proto == 17 && dport == (short)53) {
+		    tagid = (byte)0xbf;
+		    encrypted = true;
+		} else if (proto == 6 && dport == (short)443) {
+		    tagid = (byte)0xbf;
+		    encrypted = true;
+		} else if (proto == 6 && dport == (short)80) {
+		    tagid = (byte)0xbf;
+		    encrypted = true;
+		} else if (proto == 58) {
+		    tagid = (byte)0xbf;
+		    encrypted = true;
+		}
+
+		byte[] srcToSend = source4;
+		byte[] dstToSend = destination4;
+		if (isIpv4Local(destination4)) {
+		    tagid ^= 0x8;
+		    srcToSend = destination4;
+		    dstToSend = source4;
+		}
+
+		packet.position(packet.limit());
+		packet.limit(packet.limit() + 8);
+		packet.put(dstToSend);
+		packet.put(tagid);
+		packet.put(proto);
+		packet.putShort((short)plen);
+		packet.flip();
+
+		if (encrypted) {
+		    for (int i = 0; i < plen; i++) {
+			byte code = packet.get(base + i);
+			packet.put(base + i, (byte)(code ^ 0xf));
+		    }
+		}
+
+		packet.position(base - 4);
+		packet.mark();
+		packet.put(srcToSend);
+		packet.reset();
+
+		return dataChannel.write(packet);
+            } else if ((0xf0 & version) == 0x60) {
                 // int length = packet.limit();
                 // packet.limit(length + 20);
                 packet.position(position + 4);
@@ -628,16 +781,16 @@ public class ToyVpnRunnable implements Runnable {
                 packet.get(destination);
 
                 int base = packet.position();
-                short sport = packet.getShort();
+		packet.getShort();
                 short dport = packet.getShort();
 
 
 		byte tagid = 0x60;
-                if (proto == 17 && dport == 53) {
+                if (proto == 17 && dport == (short)53) {
 		    tagid = (byte)0x9f;
-                } else if (proto == 6 && dport == 443) {
+                } else if (proto == 6 && dport == (short)443) {
 		    tagid = (byte)0x9f;
-                } else if (proto == 6 && dport == 80) {
+                } else if (proto == 6 && dport == (short)80) {
 		    tagid = (byte)0x9f;
 		} else if (proto == 58) {
 		    tagid = (byte)0x9f;
@@ -724,6 +877,9 @@ public class ToyVpnRunnable implements Runnable {
 	    parameters += " address,114.114.114.115,32";
 	    parameters += " address,180.76.76.76,32";
 	    parameters += " address,223.5.5.5,32";
+	    for (String route : GOOGLE_IPV4_ROUTES) {
+		parameters += " route," + route;
+	    }
 	    parameters += " route,64:ff9b::,64";
 	    parameters += " route,2000::,48";
 	    parameters += " route,2001:4860:4860::,48";

@@ -66,7 +66,7 @@ public class ToyVpnService extends VpnService {
             return false;
         }
 
-	final String packageList = "com.eg.android.AlipayGphone,com.eastmoney.android.berlin,com.alibaba.android.rimet";
+	final String packageList = "com.alibaba.android.rimet,com.eg.android.AlipayGphone,com.chinamworld.main,com.chinamworld.bocmbci,com.bochk.com,com.schwab.mobile";
 
 	private Set<String> checkPackages(Set<String> packageNames) {
 	    return 
