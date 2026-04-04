@@ -364,7 +364,7 @@ public class ToyVpnRunnable implements Runnable {
 	int qType = query.getShort() & 0xFFFF;
 	int qClass = query.getShort() & 0xFFFF;
 
-	// Log.i("HELLO", "isDnsPacket: " + (qType == DNS_A_RECORD));
+	// Log.i(LOG_TAG, "isDnsPacket: " + (qType == DNS_A_RECORD));
 	return qType == DNS_A_RECORD;
     }
 
@@ -376,7 +376,7 @@ public class ToyVpnRunnable implements Runnable {
 	ByteBuffer response = ByteBuffer.allocate(MAX_PACKET_SIZE);
 	response.put(query.slice());
 	response.flip();
-	Log.d("HELLO", "generateDnsResponse limit=" + response.limit() + " length=" + length + " limit=" + query.limit());
+	Log.d(LOG_TAG, "generateDnsResponse limit=" + response.limit() + " length=" + length + " limit=" + query.limit());
 
 	byte[] src = new byte[16];
 	byte[] dst = new byte[16];
@@ -417,16 +417,16 @@ public class ToyVpnRunnable implements Runnable {
 	packet.get(header);
 	mDnsHeaderMap.put(xid, header);
 
-	Log.d("HELLO", "dnsCachePrepareHeader xid=" + xid);
+	Log.d(LOG_TAG, "dnsCachePrepareHeader xid=" + xid);
     }
 
     ByteBuffer assembleDnsPacket(ByteBuffer packet, int length) {
 	int xid = (0xffff & packet.getShort(0));
 	ByteBuffer newPacket = ByteBuffer.allocate(length + 48);
 
-	Log.d("HELLO", "assembleDnsPacket xid=" + xid + " length=" + length);
+	Log.d(LOG_TAG, "assembleDnsPacket xid=" + xid + " length=" + length);
 	if (!mDnsHeaderMap.containsKey((Integer)xid)) {
-	    Log.d("HELLO", "assembleDnsPacket failure xid=" + xid);
+	    Log.d(LOG_TAG, "assembleDnsPacket failure xid=" + xid);
 	    return null;
 	}
 	newPacket.put(mDnsHeaderMap.get(xid));
@@ -512,7 +512,7 @@ public class ToyVpnRunnable implements Runnable {
 	byte[] source = new byte[16];
 	static final byte[] myaddr6 = {0x34, 2, 0x52, (byte)0xe2, 0x76, (byte)0xb5, 0, 0, 0, 0, (byte)0x5e, (byte)0xfe, 10, 101, 0, 10};
 	public int read(ByteBuffer packet) throws IOException {
-	    packet.position(40);
+	    packet.position(44);
 	    int length = dataChannel.read(packet);
 	    if (length < 24) {
 		packet.clear();
@@ -520,16 +520,16 @@ public class ToyVpnRunnable implements Runnable {
 	    }
 
 	    packet.flip();
-	    packet.position(length + 40 - 4);
+	    packet.position(length + 44 - 4);
 	    byte version = packet.get();
 	    byte proto   = packet.get();
 	    short plen   = packet.getShort();
 
 	    if (version == (byte)0x97) {
-		packet.position(length + 40 - 20);
+		packet.position(length + 44 - 20);
 		packet.get(source);
+		packet.position(length - 20 - plen);
 
-		packet.rewind();
 		packet.putInt(0x280000);
 		packet.putInt(0x60000000);
 		packet.putShort(plen);
@@ -538,23 +538,23 @@ public class ToyVpnRunnable implements Runnable {
 		packet.put(source);
 		packet.put(myaddr6);
 		int base = packet.position();
-		packet.rewind();
 
 		for (int i = 0; i < plen; i++) {
 			byte code = packet.get(i + base);
 			packet.put(i + base, (byte)(code ^  0x0f));
 		}
 
-		packet.limit(length + 40 - 20);
+		packet.position(length - 20 - plen);
+		packet.limit(base + plen);
 
 		// packet.compact();
 		return packet.limit();
 
 	    } else if (version == 0x68) {
-		packet.position(length + 40 - 20);
+		packet.position(length + 44 - 20);
 		packet.get(source);
 
-		packet.rewind();
+		packet.position(length - 20 - plen);
 		packet.putInt(0x280000);
 		packet.putInt(0x60000000);
 		packet.putShort(plen);
@@ -562,8 +562,10 @@ public class ToyVpnRunnable implements Runnable {
 		packet.put((byte)0xff);
 		packet.put(source);
 		packet.put(myaddr6);
-		packet.rewind();
-		packet.limit(length + 40 - 20);
+
+		int base = packet.position();
+		packet.position(length - 20 - plen);
+		packet.limit(base + plen);
 
 		// packet.compact();
 		return packet.limit();
@@ -625,9 +627,9 @@ public class ToyVpnRunnable implements Runnable {
 		    packet.put(base + i, (byte)(code ^ 0xf));
 		}
 
-		packet.position(40);
+		packet.position(36);
 		packet.mark();
-		packet.put(source, 12, 4);
+		packet.put(source, 8, 8);
 		packet.reset();
 
                 return dataChannel.write(packet);
@@ -775,8 +777,7 @@ public class ToyVpnRunnable implements Runnable {
 		    length = tunnel.read(packet);
 		    if (length > 0) {
 			// Ignore control messages, which start with zero.
-			if (packet.get(4) != 0) {
-			    packet.position(4);
+			if (packet.getInt() != 0) {
 			    ifaceChannel.write(packet);
 			} else {
 			    // response to remote server with idle packet immediately.
@@ -791,8 +792,8 @@ public class ToyVpnRunnable implements Runnable {
 
 		    length = udpclient.read(packet);
 		    if (length > 0) {
-			packet.position(4);
-			ifaceChannel.write(packet);
+			if (packet.getInt() != 0)
+			    ifaceChannel.write(packet);
 			packet.clear();
 
 			idle = false;
@@ -801,8 +802,8 @@ public class ToyVpnRunnable implements Runnable {
 
 		    length = tcpclient.read(packet);
 		    while (length > 0) {
-			packet.position(4);
-			ifaceChannel.write(packet);
+			if (packet.getInt() != 0)
+			    ifaceChannel.write(packet);
 			packet.clear();
 
 			idle = false;
@@ -813,7 +814,7 @@ public class ToyVpnRunnable implements Runnable {
 		    length = dnsclient.receive(packet);
 		    if (length > 0) {
 			packet.flip();
-			Log.d("HELLO", "dnsclient position=" + packet.position() + " length=" + packet.limit() + " length=" + length);
+			Log.d(LOG_TAG, "dnsclient position=" + packet.position() + " length=" + packet.limit() + " length=" + length);
 			ByteBuffer dnsPacket = assembleDnsPacket(packet, length);
 			if (dnsPacket != null) {
 			    ifaceChannel.write(dnsPacket);
