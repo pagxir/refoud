@@ -231,7 +231,7 @@ public class ToyVpnRunnable implements Runnable {
 
     private int mLinkMtu = 1500;
     private int mPeerMtu = 1500;
-    private int mHeadlen = 40 + 8 + 24 - 40;
+    private int mHeadlen = 72; // 40 + 8 + 24 - 40;
 
     public InetSocketAddress getDnsServer(boolean next) {
 	InetSocketAddress defServer = null;
@@ -496,6 +496,10 @@ public class ToyVpnRunnable implements Runnable {
 	    return pollFd;
 	}
 
+	public SocketAddress getLocalAddress() throws IOException {
+	    return dataChannel.getLocalAddress();
+	}
+
 	public void close() throws IOException {
 	    dataChannel.close();
 	    descriptor.close();
@@ -510,7 +514,7 @@ public class ToyVpnRunnable implements Runnable {
 	}
 
 	byte[] source = new byte[16];
-	static final byte[] myaddr6 = {0x34, 2, 0x52, (byte)0xe2, 0x76, (byte)0xb5, 0, 0, 0, 0, (byte)0x5e, (byte)0xfe, 10, 101, 0, 10};
+	static final byte[] myaddr6 = {0x34, 2, 0x52, (byte)0xe2, 0x76, (byte)0xb5, 0, 0, 0, 0, (byte)0x5e, (byte)0xfe, 10, 63, (byte)249, 107};
 	public int read(ByteBuffer packet) throws IOException {
 	    packet.position(44);
 	    int length = dataChannel.read(packet);
@@ -528,7 +532,9 @@ public class ToyVpnRunnable implements Runnable {
 	    if (version == (byte)0x97) {
 		packet.position(length + 44 - 20);
 		packet.get(source);
+
 		packet.position(length - 20 - plen);
+		packet.position(8);
 
 		packet.putInt(0x280000);
 		packet.putInt(0x60000000);
@@ -545,6 +551,7 @@ public class ToyVpnRunnable implements Runnable {
 		}
 
 		packet.position(length - 20 - plen);
+		packet.position(8);
 		packet.limit(base + plen);
 
 		// packet.compact();
@@ -555,6 +562,8 @@ public class ToyVpnRunnable implements Runnable {
 		packet.get(source);
 
 		packet.position(length - 20 - plen);
+		packet.position(8);
+
 		packet.putInt(0x280000);
 		packet.putInt(0x60000000);
 		packet.putShort(plen);
@@ -564,7 +573,9 @@ public class ToyVpnRunnable implements Runnable {
 		packet.put(myaddr6);
 
 		int base = packet.position();
+
 		packet.position(length - 20 - plen);
+		packet.position(8);
 		packet.limit(base + plen);
 
 		// packet.compact();
@@ -635,292 +646,318 @@ public class ToyVpnRunnable implements Runnable {
                 return dataChannel.write(packet);
             }
 
-            int count = dataChannel.write(packet);
+            int count = 0; // dataChannel.write(packet);
             return count;
         }
     };
 
+    private boolean checkNetworkChange(VpnService service, SocketAddress target, DatagramNetworkChannel oldtunnel) throws IOException {
+
+	if (networkChange) {
+	    DatagramChannel tunnel = DatagramChannel.open();
+
+	    if (!service.protect(tunnel.socket())) {
+		throw new IllegalStateException("Cannot protect the tunnel");
+	    }
+
+	    tunnel.connect(target);
+	    SocketAddress newValue = tunnel.getLocalAddress();
+	    SocketAddress oldValue = oldtunnel.getLocalAddress();
+	    tunnel.close();
+
+	    if ((newValue instanceof InetSocketAddress) && (oldValue instanceof InetSocketAddress)) {
+		    InetSocketAddress new4Value = (InetSocketAddress) newValue;
+		    InetSocketAddress old4Value = (InetSocketAddress) oldValue;
+		    networkChange = !new4Value.getAddress().equals(old4Value.getAddress());
+	    }
+	}
+
+	return networkChange;
+    }
+
     private boolean run(SocketAddress server)
 	    throws InterruptedException, IllegalArgumentException, IllegalStateException {
-	    DatagramNetworkChannel tunnel = null;
-	    DatagramNetworkChannel dnsclient = null;
-	    DatagramNetworkChannel tcpclient = null;
-	    DatagramNetworkChannel udpclient = null;
-	    ParcelFileDescriptor iface = null;
-	    boolean success = false;
-	    try {
-		synchronized (mService) {
-		    if (mOnConnectListener != null) {
-			mOnConnectListener.onConnectStage(OnConnectListener.Stage.connecting);
-		    }
-		}
-
-		tunnel = DatagramNetworkChannel.build(mService, server);
-		tcpclient = DatagramNetworkChannel.build(mService, server);
-		udpclient = DatagramNetworkChannel.build(mService, server);
-		dnsclient = DatagramNetworkChannel.build(mService, getDnsServer(false));
-
-		// Authenticate with server and configure the virtual network interface.
-		//3402:52e2:76b5::5efe:c0a8:a8b/64
-		String parameters = "address,3402:52e2:76b5::5efe:10.101.0.10,64 dns,64:ff9b::7f09:909"; // handshakeServer(tunnel);
-		parameters += " address,10.101.0.10,30";
-		parameters += " route,64:ff9b::,96";
-		parameters += " route,2000::,48";
-		parameters += " route,2001:4860:4860::,48";
-		parameters += " mtu," + String.valueOf(mLinkMtu - mHeadlen);
-		Log.i(getTag(), "config (" + parameters + ")");
-
-		iface = configureVirtualInterface(parameters);
-		mPeerMtu = mLinkMtu;
-		Log.i(getTag(), "New interface: " + iface + " (" + parameters + ")");
-
-		synchronized (mService) {
-		    if (mOnConnectListener != null) {
-			mOnConnectListener.onConnectStage(OnConnectListener.Stage.establish);
-		    }
-		}
-
-		// Now we are connected. Set the flag.
-		success = true;
-
-		// Packets to be sent are queued in this input stream.
-		FileInputStream ifaceIn = new FileInputStream(iface.getFileDescriptor());
-		FileChannel ifaceInChannel = ifaceIn.getChannel();
-
-		// Packets received need to be written to this output stream.
-		FileOutputStream ifaceOut = new FileOutputStream(iface.getFileDescriptor());
-		FileChannel ifaceChannel = ifaceOut.getChannel();
-
-		// Allocate the buffer for a single packet.
-		ByteBuffer packet = ByteBuffer.allocateDirect(MAX_PACKET_SIZE);
-
-		// Timeouts:
-		//   - when data has not been sent in a while, send empty keepalive messages.
-		//   - when data has not been received in a while, assume the connection is broken.
-		long lastReadServerTime = System.currentTimeMillis();
-		long lastReadVirtualInterfaceTime = System.currentTimeMillis();
-
-		NetworkRequest networkRequest = new NetworkRequest.Builder()
-		    .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-		    .addCapability(NetworkCapabilities.NET_CAPABILITY_FOREGROUND)
-		    .build();
-		mManager.registerNetworkCallback(networkRequest, mCallback);
-
-		StructPollfd pollIface = new StructPollfd();
-		pollIface.events = (short)OsConstants.POLLIN;
-		pollIface.fd = iface.getFileDescriptor();
-		StructPollfd[] structPollfds = new StructPollfd[5];
-
-		// We keep forwarding packets till something goes wrong.
-		//noinspection InfiniteLoopStatement
-		while (true) {
-		    // Assume that we did not make any progress in this iteration.
-		    boolean idle = true;
-		    boolean uploading = true;
-
-		    // Read the outgoing packet from the input stream (Virtual Interface).
-		    packet.position(4);
-		    int length = ifaceInChannel.read(packet);
-		    while (length > 0) {
-			packet.limit(length + 4);
-			packet.position(4);
-
-			if (isDnsPacket(packet)) {
-			    packet.position(4);
-			    ByteBuffer newPacket = generateDnsResponse(packet, length);
-			    dnsCachePrepareHeader(newPacket);
-			    packet.position(4 + 48);
-			    // ifaceOut.write(newPacket.array(), 0, newPacket.limit());
-			    dnsclient.send(packet);
-			    packet.clear();
-			} else {
-			    packet.position(0);
-			    // Write the outgoing packet to the tunnel (server).
-			    // packet.position(length + 4);
-			    // byte val = packet.get(4 + 6);
-			    // packet.put(4 + 6, (byte)(val ^ (byte)0x5a));
-			    //
-			    byte val = packet.get(4 + 6);
-			    switch (val) {
-				case 6:
-				    uploading = (length > 512);
-				    tcpclient.write(packet);
-				    break;
-
-				case 17:
-				    if (packet.getShort(4 + 40 + 2) != 53) {
-					udpclient.write(packet);
-					break;
-				    }
-
-				default:
-				    tunnel.write(packet);
-				    break;
-			    }
-			    packet.clear();
-			    if (length > 60)
-				lastReadVirtualInterfaceTime = System.currentTimeMillis();
-			}
-
-			// There might be more outgoing packets.
-			if (uploading) {
-			    packet.position(4);
-			    length = ifaceInChannel.read(packet);
-			    uploading = false;
-			} else {
-			    idle = false;
-			    length = 0;
-			}
-		    }
-
-		    // Read the incoming packet from the tunnel (server).
-		    length = tunnel.read(packet);
-		    if (length > 0) {
-			// Ignore control messages, which start with zero.
-			if (packet.getInt() != 0) {
-			    ifaceChannel.write(packet);
-			} else {
-			    // response to remote server with idle packet immediately.
-			    tunnel.send(packet);
-			}
-			packet.clear();
-
-			// There might be more incoming packets.
-			idle = false;
-			lastReadServerTime = System.currentTimeMillis();
-		    }
-
-		    length = udpclient.read(packet);
-		    if (length > 0) {
-			if (packet.getInt() != 0)
-			    ifaceChannel.write(packet);
-			packet.clear();
-
-			idle = false;
-			lastReadServerTime = System.currentTimeMillis();
-		    }
-
-		    length = tcpclient.read(packet);
-		    while (length > 0) {
-			if (packet.getInt() != 0)
-			    ifaceChannel.write(packet);
-			packet.clear();
-
-			idle = false;
-			lastReadServerTime = System.currentTimeMillis();
-			length = tcpclient.read(packet);
-		    }
-
-		    length = dnsclient.receive(packet);
-		    if (length > 0) {
-			packet.flip();
-			Log.d(LOG_TAG, "dnsclient position=" + packet.position() + " length=" + packet.limit() + " length=" + length);
-			ByteBuffer dnsPacket = assembleDnsPacket(packet, length);
-			if (dnsPacket != null) {
-			    ifaceChannel.write(dnsPacket);
-			}
-
-			packet.clear();
-
-			// ifaceOut.write(packet.array(), 4, length - 4);
-			idle = false;
-		    }
-
-		    if (networkChange) {
-			networkChange = false;
-			tcpclient.close();
-			udpclient.close();
-			dnsclient.close();
-			tunnel.close();
-
-			tunnel = DatagramNetworkChannel.build(mService, server);
-			tcpclient = DatagramNetworkChannel.build(mService, server);
-			udpclient = DatagramNetworkChannel.build(mService, server);
-			dnsclient = DatagramNetworkChannel.build(mService, getDnsServer(true));
-			if (mLinkMtu != mPeerMtu)
-			    throw new IOException("Timed out 0");
-		    } else if (idle) {
-			int nPolled = 0;
-			structPollfds[0] = tunnel.fillPollfd();
-			structPollfds[1] = dnsclient.fillPollfd();
-			structPollfds[2] = tcpclient.fillPollfd();
-			structPollfds[3] = udpclient.fillPollfd();
-			structPollfds[4] = pollIface;
-
-			//noinspection BusyWait
-			try {
-
-			    nPolled = Os.poll(structPollfds, 1000);
-			    // if ((pollTunnel.revents & OsConstants.POLLIN) == OsConstants.POLLIN) lastReadServerTime = System.currentTimeMillis();
-			    if (nPolled > 0) lastReadServerTime = System.currentTimeMillis();
-			} catch (ErrnoException e) {
-			    throw new IOException("Timed out 0");
-			}
-
-			long timeNow = System.currentTimeMillis();
-
-			if (lastReadVirtualInterfaceTime > lastReadServerTime && lastReadServerTime + RECEIVE_TIMEOUT_MS <= timeNow) {
-			    lastReadServerTime = System.currentTimeMillis();
-			    lastReadVirtualInterfaceTime = System.currentTimeMillis();
-
-			    try {
-				nPolled = Os.poll(structPollfds, 3600000);
-				if (nPolled == 0) networkChange = true;
-			    } catch (ErrnoException e) {
-				throw new IOException("Timed out 1");
-			    }
-			}
-
-			if (lastReadServerTime + KEEPALIVE_INTERVAL_MS <= timeNow) {
-			    // We are receiving for a long time but not sending.
-			    // Send empty control messages.
-			    packet.put((byte) 0).limit(1);
-			    packet.position(0);
-			    // tunnel.write(packet);
-			    packet.clear();
-			}
-		    }
-		}
-	    } catch (PortUnreachableException e) {
-		success = false;
-		Log.e(getTag(), "Cannot use socket for PortUnreachableException", e);
-	    } catch (IOException e) {
-		Log.e(getTag(), "Cannot use socket", e);
-	    } finally {
-
-		synchronized (mService) {
-		    if (mOnConnectListener != null) {
-			mOnConnectListener.onConnectStage(OnConnectListener.Stage.disconnected);
-		    }
-		}
-
-		try {
-		    mManager.unregisterNetworkCallback(mCallback);
-
-		    if (iface != null) {
-			iface.close();
-		    }
-
-		    if (dnsclient != null) {
-			dnsclient.close();
-		    }
-
-		    if (tcpclient != null) {
-			tcpclient.close();
-		    }
-
-		    if (udpclient != null) {
-			udpclient.close();
-		    }
-
-		    if (tunnel != null) {
-			tunnel.close();
-		    }
-		} catch (Exception e) {
-		    Log.e(getTag(), "Unable to close interface", e);
+	DatagramNetworkChannel tunnel = null;
+	DatagramNetworkChannel dnsclient = null;
+	DatagramNetworkChannel tcpclient = null;
+	DatagramNetworkChannel udpclient = null;
+	ParcelFileDescriptor iface = null;
+	boolean success = false;
+	try {
+	    synchronized (mService) {
+		if (mOnConnectListener != null) {
+		    mOnConnectListener.onConnectStage(OnConnectListener.Stage.connecting);
 		}
 	    }
-	    return success;
+
+	    tunnel = DatagramNetworkChannel.build(mService, server);
+	    tcpclient = DatagramNetworkChannel.build(mService, server);
+	    udpclient = DatagramNetworkChannel.build(mService, server);
+	    dnsclient = DatagramNetworkChannel.build(mService, getDnsServer(false));
+
+	    // Authenticate with server and configure the virtual network interface.
+	    //3402:52e2:76b5::5efe:c0a8:a8b/64
+	    String parameters = "address,3402:52e2:76b5::5efe:10.63.249.107,64 dns,64:ff9b::7f09:909"; // handshakeServer(tunnel);
+	    // String parameters = "address,3402:52e2:76b5::5efe:10.101.0.10,64 dns,64:ff9b::7f09:909"; // handshakeServer(tunnel);
+	    parameters += " address,10.63.249.107,30";
+	    parameters += " route,64:ff9b::,64";
+	    parameters += " route,2000::,48";
+	    parameters += " route,2001:4860:4860::,48";
+	    // parameters += " mtu," + String.valueOf(mLinkMtu - mHeadlen);
+	    parameters += " mtu,1400";
+	    Log.i(getTag(), "config (" + parameters + ")");
+
+	    iface = configureVirtualInterface(parameters);
+	    mPeerMtu = mLinkMtu;
+	    Log.i(getTag(), "New interface: " + iface + " (" + parameters + ")");
+
+	    synchronized (mService) {
+		if (mOnConnectListener != null) {
+		    mOnConnectListener.onConnectStage(OnConnectListener.Stage.establish);
+		}
+	    }
+
+	    // Now we are connected. Set the flag.
+	    success = true;
+
+	    // Packets to be sent are queued in this input stream.
+	    FileInputStream ifaceIn = new FileInputStream(iface.getFileDescriptor());
+	    FileChannel ifaceInChannel = ifaceIn.getChannel();
+
+	    // Packets received need to be written to this output stream.
+	    FileOutputStream ifaceOut = new FileOutputStream(iface.getFileDescriptor());
+	    FileChannel ifaceChannel = ifaceOut.getChannel();
+
+	    // Allocate the buffer for a single packet.
+	    ByteBuffer packet = ByteBuffer.allocateDirect(MAX_PACKET_SIZE);
+
+	    // Timeouts:
+	    //   - when data has not been sent in a while, send empty keepalive messages.
+	    //   - when data has not been received in a while, assume the connection is broken.
+	    long lastReadServerTime = System.currentTimeMillis();
+	    long lastReadVirtualInterfaceTime = System.currentTimeMillis();
+
+	    NetworkRequest networkRequest = new NetworkRequest.Builder()
+		.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+		.addCapability(NetworkCapabilities.NET_CAPABILITY_FOREGROUND)
+		.build();
+	    mManager.registerNetworkCallback(networkRequest, mCallback);
+
+	    StructPollfd pollIface = new StructPollfd();
+	    pollIface.events = (short)OsConstants.POLLIN;
+	    pollIface.fd = iface.getFileDescriptor();
+	    StructPollfd[] structPollfds = new StructPollfd[5];
+
+	    // We keep forwarding packets till something goes wrong.
+	    //noinspection InfiniteLoopStatement
+	    while (true) {
+		// Assume that we did not make any progress in this iteration.
+		boolean idle = true;
+		boolean uploading = true;
+
+		// Read the outgoing packet from the input stream (Virtual Interface).
+		packet.position(4);
+		int length = ifaceInChannel.read(packet);
+		while (length > 0) {
+		    packet.limit(length + 4);
+		    packet.position(4);
+
+		    if (isDnsPacket(packet)) {
+			packet.position(4);
+			ByteBuffer newPacket = generateDnsResponse(packet, length);
+			dnsCachePrepareHeader(newPacket);
+			packet.position(4 + 48);
+			// ifaceOut.write(newPacket.array(), 0, newPacket.limit());
+			dnsclient.send(packet);
+			packet.clear();
+		    } else {
+			packet.position(0);
+			// Write the outgoing packet to the tunnel (server).
+			// packet.position(length + 4);
+			// byte val = packet.get(4 + 6);
+			// packet.put(4 + 6, (byte)(val ^ (byte)0x5a));
+			//
+			byte val = packet.get(4 + 6);
+			switch (val) {
+			    case 6:
+				uploading = (length > 512);
+				tcpclient.write(packet);
+				break;
+
+			    case 17:
+				if (packet.getShort(4 + 40 + 2) != 53) {
+				    udpclient.write(packet);
+				    break;
+				}
+
+			    default:
+				tunnel.write(packet);
+				break;
+			}
+			packet.clear();
+			if (length > 60)
+			    lastReadVirtualInterfaceTime = System.currentTimeMillis();
+		    }
+
+		    // There might be more outgoing packets.
+		    if (uploading) {
+			packet.position(4);
+			length = ifaceInChannel.read(packet);
+			uploading = false;
+		    } else {
+			idle = false;
+			length = 0;
+		    }
+		}
+
+		// Read the incoming packet from the tunnel (server).
+		length = tunnel.read(packet);
+		if (length > 0) {
+		    // Ignore control messages, which start with zero.
+		    if (packet.getInt() != 0) {
+			ifaceChannel.write(packet);
+		    } else {
+			// response to remote server with idle packet immediately.
+			// tunnel.send(packet);
+		    }
+		    packet.clear();
+
+		    // There might be more incoming packets.
+		    idle = false;
+		    lastReadServerTime = System.currentTimeMillis();
+		}
+
+		length = udpclient.read(packet);
+		if (length > 0) {
+		    if (packet.getInt() != 0)
+			ifaceChannel.write(packet);
+		    packet.clear();
+
+		    idle = false;
+		    lastReadServerTime = System.currentTimeMillis();
+		}
+
+		length = tcpclient.read(packet);
+		while (length > 0) {
+		    if (packet.getInt() != 0)
+			ifaceChannel.write(packet);
+		    packet.clear();
+
+		    idle = false;
+		    lastReadServerTime = System.currentTimeMillis();
+		    length = tcpclient.read(packet);
+		}
+
+		length = dnsclient.receive(packet);
+		if (length > 0) {
+		    packet.flip();
+		    Log.d(LOG_TAG, "dnsclient position=" + packet.position() + " length=" + packet.limit() + " length=" + length);
+		    ByteBuffer dnsPacket = assembleDnsPacket(packet, length);
+		    if (dnsPacket != null) {
+			ifaceChannel.write(dnsPacket);
+		    }
+
+		    packet.clear();
+
+		    // ifaceOut.write(packet.array(), 4, length - 4);
+		    idle = false;
+		}
+
+		if (idle && checkNetworkChange(mService, server, tunnel)) {
+		    networkChange = false;
+		    tcpclient.close();
+		    udpclient.close();
+		    dnsclient.close();
+		    tunnel.close();
+
+		    tunnel = DatagramNetworkChannel.build(mService, server);
+		    tcpclient = DatagramNetworkChannel.build(mService, server);
+		    udpclient = DatagramNetworkChannel.build(mService, server);
+		    dnsclient = DatagramNetworkChannel.build(mService, getDnsServer(true));
+		    if (mLinkMtu != mPeerMtu)
+			throw new IOException("Timed out 0");
+		} else if (idle) {
+		    int nPolled = 0;
+		    structPollfds[0] = tunnel.fillPollfd();
+		    structPollfds[1] = dnsclient.fillPollfd();
+		    structPollfds[2] = tcpclient.fillPollfd();
+		    structPollfds[3] = udpclient.fillPollfd();
+		    structPollfds[4] = pollIface;
+
+		    //noinspection BusyWait
+		    try {
+
+			nPolled = Os.poll(structPollfds, 1000);
+			// if ((pollTunnel.revents & OsConstants.POLLIN) == OsConstants.POLLIN) lastReadServerTime = System.currentTimeMillis();
+			if (nPolled > 0) lastReadServerTime = System.currentTimeMillis();
+		    } catch (ErrnoException e) {
+			throw new IOException("Timed out 0");
+		    }
+
+		    long timeNow = System.currentTimeMillis();
+
+		    if (lastReadVirtualInterfaceTime > lastReadServerTime && lastReadServerTime + RECEIVE_TIMEOUT_MS <= timeNow) {
+			lastReadServerTime = System.currentTimeMillis();
+			lastReadVirtualInterfaceTime = System.currentTimeMillis();
+
+			try {
+			    nPolled = Os.poll(structPollfds, 3600000);
+			    if (nPolled == 0) networkChange = true;
+			} catch (ErrnoException e) {
+			    throw new IOException("Timed out 1");
+			}
+		    }
+
+		    if (lastReadServerTime + KEEPALIVE_INTERVAL_MS <= timeNow) {
+			// We are receiving for a long time but not sending.
+			// Send empty control messages.
+			packet.put((byte) 0).limit(1);
+			packet.position(0);
+			// tunnel.write(packet);
+			packet.clear();
+		    }
+		}
+	    }
+	} catch (PortUnreachableException e) {
+	    success = false;
+	    Log.e(getTag(), "Cannot use socket for PortUnreachableException", e);
+	} catch (IOException e) {
+	    Log.e(getTag(), "Cannot use socket", e);
+	} finally {
+
+	    synchronized (mService) {
+		if (mOnConnectListener != null) {
+		    mOnConnectListener.onConnectStage(OnConnectListener.Stage.disconnected);
+		}
+	    }
+
+	    try {
+		mManager.unregisterNetworkCallback(mCallback);
+
+		if (iface != null) {
+		    iface.close();
+		}
+
+		if (dnsclient != null) {
+		    dnsclient.close();
+		}
+
+		if (tcpclient != null) {
+		    tcpclient.close();
+		}
+
+		if (udpclient != null) {
+		    udpclient.close();
+		}
+
+		if (tunnel != null) {
+		    tunnel.close();
+		}
+	    } catch (Exception e) {
+		Log.e(getTag(), "Unable to close interface", e);
+	    }
+	}
+	return success;
     }
 
     private String handshakeServer(DatagramChannel tunnel)
