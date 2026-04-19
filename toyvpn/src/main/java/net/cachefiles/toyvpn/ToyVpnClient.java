@@ -47,6 +47,7 @@ public class ToyVpnClient extends Activity {
         String SERVER_ADDRESS = "server.address";
         String SERVER_PORT = "server.port";
         String SHARED_SECRET = "shared.secret";
+        String DNS_SERVER = "dns.server";
         String PROXY_HOSTNAME = "proxyhost";
         String PROXY_PORT = "proxyport";
         String ALLOW = "allow";
@@ -55,6 +56,7 @@ public class ToyVpnClient extends Activity {
 
     TextView serverAddress;
     TextView serverPort;
+    TextView dnsServer;
     TextView sharedSecret;
     TextView proxyHost;
     TextView proxyPort;
@@ -86,6 +88,7 @@ public class ToyVpnClient extends Activity {
 
         serverAddress = findViewById(R.id.address);
         serverPort = findViewById(R.id.port);
+        dnsServer = findViewById(R.id.dns_server);
         sharedSecret = findViewById(R.id.secret);
         proxyHost = findViewById(R.id.proxyhost);
         proxyPort = findViewById(R.id.proxyport);
@@ -147,6 +150,7 @@ public class ToyVpnClient extends Activity {
         serverAddress.setText(prefs.getString(Prefs.SERVER_ADDRESS, ""));
         int serverPortPrefValue = prefs.getInt(Prefs.SERVER_PORT, 0);
         serverPort.setText(String.valueOf(serverPortPrefValue == 0 ? "" : serverPortPrefValue));
+        dnsServer.setText(prefs.getString(Prefs.DNS_SERVER, ""));
         sharedSecret.setText(prefs.getString(Prefs.SHARED_SECRET, ""));
         proxyHost.setText(prefs.getString(Prefs.PROXY_HOSTNAME, ""));
         int proxyPortPrefValue = prefs.getInt(Prefs.PROXY_PORT, 0);
@@ -185,6 +189,7 @@ public class ToyVpnClient extends Activity {
         prefs.edit()
                 .putString(Prefs.SERVER_ADDRESS, serverAddress.getText().toString())
                 .putInt(Prefs.SERVER_PORT, serverPortNum)
+                .putString(Prefs.DNS_SERVER, dnsServer.getText().toString())
                 .putString(Prefs.SHARED_SECRET, sharedSecret.getText().toString())
                 .putString(Prefs.PROXY_HOSTNAME, proxyHost.getText().toString())
                 .putInt(Prefs.PROXY_PORT, proxyPortNum)

@@ -77,7 +77,7 @@ public class ToyVpnService extends VpnService {
 	}
 
 	@Override
-	public void saveServer(String  server, int port) {
+	public void saveServer(String  server, int port, String dns) {
 	    Set<String> packageSet = new HashSet<String>();
 	    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
 		packageSet = Arrays.stream(packageList.split(","))
@@ -92,6 +92,7 @@ public class ToyVpnService extends VpnService {
 	    prefs.edit()
 		.putString(ToyVpnClient.Prefs.SERVER_ADDRESS, server)
 		.putInt(ToyVpnClient.Prefs.SERVER_PORT, port)
+		.putString(ToyVpnClient.Prefs.DNS_SERVER, dns)
 		.putStringSet(ToyVpnClient.Prefs.PACKAGES, packageSet)
 		.commit();
 
@@ -161,9 +162,10 @@ public class ToyVpnService extends VpnService {
         final int port = prefs.getInt(ToyVpnClient.Prefs.SERVER_PORT, 0);
         final String proxyHost = prefs.getString(ToyVpnClient.Prefs.PROXY_HOSTNAME, "");
         final int proxyPort = prefs.getInt(ToyVpnClient.Prefs.PROXY_PORT, 0);
+        final String dnsServer = prefs.getString(ToyVpnClient.Prefs.DNS_SERVER, "");
         startToyVpnRunnable(new ToyVpnRunnable(
                 this, mNextConnectionId.getAndIncrement(), server, port, secret,
-                proxyHost, proxyPort, allow, packages));
+                proxyHost, proxyPort, allow, packages, dnsServer));
     }
 
     private void startToyVpnRunnable(final ToyVpnRunnable runnable) {

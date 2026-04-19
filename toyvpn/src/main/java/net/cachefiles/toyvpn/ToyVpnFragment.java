@@ -18,10 +18,12 @@ public class ToyVpnFragment extends PreferenceFragmentCompat
     private String PREF_KEY_SWITCH = "switch";
     private String PREF_KEY_HOST = "host";
     private String PREF_KEY_PORT = "port";
+    private String PREF_KEY_DNS = "dns";
 
     private SwitchPreferenceCompat mSwitcher = null;
     private EditTextPreference mHostText = null;
     private EditTextPreference mPortText = null;
+    private EditTextPreference mDnsText = null;
 
     public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
         setPreferencesFromResource(R.xml.preferences, rootKey);
@@ -29,12 +31,16 @@ public class ToyVpnFragment extends PreferenceFragmentCompat
 	mSwitcher = (SwitchPreferenceCompat) findPreference(PREF_KEY_SWITCH);
 	mHostText = (EditTextPreference) findPreference(PREF_KEY_HOST);
 	mPortText = (EditTextPreference) findPreference(PREF_KEY_PORT);
+	mDnsText = (EditTextPreference) findPreference(PREF_KEY_DNS);
 
 	mHostText.setSummary(mHostText.getText());
 	mHostText.setOnPreferenceChangeListener(this);
 
 	mPortText.setSummary(mPortText.getText());
 	mPortText.setOnPreferenceChangeListener(this);
+
+	mDnsText.setSummary(mDnsText.getText());
+	mDnsText.setOnPreferenceChangeListener(this);
 
 	getPreferenceManager().setOnPreferenceTreeClickListener(this);
     }
@@ -47,6 +53,8 @@ public class ToyVpnFragment extends PreferenceFragmentCompat
 	    mHostText.setSummary(newValue.toString());
 	} else if (preference == mPortText) {
 	    mPortText.setSummary(newValue.toString());
+	} else if (preference == mDnsText) {
+	    mDnsText.setSummary(newValue.toString());
 	}
 
 	return true;
@@ -60,6 +68,11 @@ public class ToyVpnFragment extends PreferenceFragmentCompat
     public String getPort() {
 	Log.d(LOG_TAG, "onPreferenceTreeClick port=" + mPortText.getText());
 	return mPortText.getText();
+    }
+
+    public String getDns() {
+	Log.d(LOG_TAG, "onPreferenceTreeClick dns=" + mDnsText.getText());
+	return mDnsText.getText();
     }
 
     private ToyVpnSettings mActivity = null;

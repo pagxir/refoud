@@ -20,6 +20,7 @@
 
     <string name="address">Server Address:</string>
     <string name="port">Server Port:</string>
+    <string name="dns_server">DNS Server:</string>
     <string name="secret">Shared Secret:</string>
     <string name="connect">Connect!</string>
     <string name="disconnect">Disconnect!</string>
@@ -32,6 +33,7 @@
 
     <string name="host_title">Host</string>
     <string name="port_title">Port</string>
+    <string name="dns_title">DNS</string>
     <string name="config_header">Config</string>
 
     <string name="launching">ToyVPN is launching...</string>

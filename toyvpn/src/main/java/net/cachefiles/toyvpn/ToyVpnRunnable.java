@@ -123,6 +123,9 @@ public class ToyVpnRunnable implements Runnable {
     private String mProxyHostName;
     private int mProxyHostPort;
 
+    // DNS server
+    private String mDnsServer;
+
     // Allowed/Disallowed packages for VPN usage
     private final boolean mAllow;
     private final Set<String> mPackages;
@@ -130,7 +133,7 @@ public class ToyVpnRunnable implements Runnable {
     public ToyVpnRunnable(final VpnService service, final int connectionId,
 	    final String serverName, final int serverPort, final byte[] sharedSecret,
 	    final String proxyHostName, final int proxyHostPort, boolean allow,
-	    final Set<String> packages) {
+	    final Set<String> packages, final String dnsServer) {
 	mService = service;
 	mConnectionId = connectionId;
 
@@ -146,6 +149,7 @@ public class ToyVpnRunnable implements Runnable {
 	    // The port value is always an integer due to the configured inputType.
 	    mProxyHostPort = proxyHostPort;
 	}
+	mDnsServer = dnsServer;
 	mAllow = allow;
 	mPackages = packages;
     }
@@ -712,7 +716,8 @@ public class ToyVpnRunnable implements Runnable {
 
 	    // Authenticate with server and configure the virtual network interface.
 	    //3402:52e2:76b5::5efe:c0a8:a8b/64
-	    String parameters = "address,3402:52e2:76b5::5efe:10.63.249.107,64 dns,64:ff9b::7f08:808"; // handshakeServer(tunnel);
+	    String dnsAddress = TextUtils.isEmpty(mDnsServer) ? "64:ff9b::7f08:808" : mDnsServer;
+	    String parameters = "address,3402:52e2:76b5::5efe:10.63.249.107,64 dns," + dnsAddress; // handshakeServer(tunnel);
 	    // String parameters = "address,3402:52e2:76b5::5efe:10.101.0.10,64 dns,64:ff9b::7f09:909"; // handshakeServer(tunnel);
 	    parameters += " address,10.63.249.107,30";
 	    parameters += " route,64:ff9b::,64";

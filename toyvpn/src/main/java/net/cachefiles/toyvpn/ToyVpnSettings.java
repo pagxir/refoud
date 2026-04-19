@@ -105,6 +105,7 @@ public class ToyVpnSettings extends FragmentActivity {
 
 	int serverPortNum = -1;
 	String serverName = mToyVpnFragment.getServer();
+	String dnsServer = mToyVpnFragment.getDns();
 
 	try {
 	    String str = mToyVpnFragment.getPort();
@@ -113,7 +114,7 @@ public class ToyVpnSettings extends FragmentActivity {
 	    e.printStackTrace();
 	}
 
-	mConnection.updateConfig(serverName, serverPortNum);
+	mConnection.updateConfig(serverName, serverPortNum, dnsServer);
 	doStartVpnService();
 	return;
     }
@@ -147,14 +148,14 @@ public class ToyVpnSettings extends FragmentActivity {
 	    mAidl = null;
         }
 
-	public void updateConfig(String server, int port) {
+	public void updateConfig(String server, int port, String dns) {
 	    if (mAidl == null) {
 		Log.d(LOG_TAG, "updateConfig failure");
 		return;
 	    }
 
 	    try {
-		mAidl.saveServer(server, port);
+		mAidl.saveServer(server, port, dns);
 	    } catch (RemoteException e) {
 		Log.d(LOG_TAG, "updateConfig failure");
 	    }
