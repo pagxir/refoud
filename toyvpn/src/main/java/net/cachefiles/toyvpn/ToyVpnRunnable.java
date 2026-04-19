@@ -323,7 +323,7 @@ public class ToyVpnRunnable implements Runnable {
     private static final int DNS_CLASS_IN = 1;
     private static final int DNS_PORT = 53;
 
-    public static boolean isDnsPacket(ByteBuffer query) {
+    public static boolean isDnsPacket(ByteBuffer query, boolean isFallback) {
 	if (query == null || query.remaining() < IPV6_HEADER_LENGTH + UDP_HEADER_LENGTH) {
 	    return false;
 	}
@@ -334,7 +334,7 @@ public class ToyVpnRunnable implements Runnable {
 	int udpSrcPort = query.getShort() & 0xFFFF;
 	int udpDstPort = query.getShort() & 0xFFFF;
 
-	if (udpDstPort != DNS_PORT) {
+	if (isFallback? udpSrcPort != DNS_PORT: udpDstPort != DNS_PORT) {
 	    query.position(position);
 	    return false;
 	}
@@ -374,10 +374,11 @@ public class ToyVpnRunnable implements Runnable {
 
 	// Log.i(LOG_TAG, "isDnsPacket: " + (qType == DNS_A_RECORD));
 	query.position(position);
+	if (isFallback) return true;
 	return qType == DNS_A_RECORD;
     }
 
-    public static ByteBuffer generateDnsResponse(ByteBuffer query, int length) {
+    public static ByteBuffer generateDnsResponse(ByteBuffer query, int length, boolean isFallback) {
 	if (query == null || query.remaining() < 12) {
 	    throw new IllegalArgumentException("Invalid DNS request buffer");
 	}
@@ -400,10 +401,17 @@ public class ToyVpnRunnable implements Runnable {
 	response.get(dstPort, 0, 2);
 
 	response.position(8);
-	response.put(dst);
-	response.put(src);
-	response.put(dstPort);
-	response.put(srcPort);
+	if (isFallback) {
+		response.put(src);
+		response.put(dst);
+		response.put(srcPort);
+		response.put(dstPort);
+	} else {
+		response.put(dst);
+		response.put(src);
+		response.put(dstPort);
+		response.put(srcPort);
+	}
 
 	short flags = response.getShort(50);
 	response.putShort(50, (short)0x8180);
@@ -704,7 +712,7 @@ public class ToyVpnRunnable implements Runnable {
 
 	    // Authenticate with server and configure the virtual network interface.
 	    //3402:52e2:76b5::5efe:c0a8:a8b/64
-	    String parameters = "address,3402:52e2:76b5::5efe:10.63.249.107,64 dns,64:ff9b::7f09:909"; // handshakeServer(tunnel);
+	    String parameters = "address,3402:52e2:76b5::5efe:10.63.249.107,64 dns,64:ff9b::7f08:808"; // handshakeServer(tunnel);
 	    // String parameters = "address,3402:52e2:76b5::5efe:10.101.0.10,64 dns,64:ff9b::7f09:909"; // handshakeServer(tunnel);
 	    parameters += " address,10.63.249.107,30";
 	    parameters += " route,64:ff9b::,64";
@@ -769,10 +777,10 @@ public class ToyVpnRunnable implements Runnable {
 		    packet.flip();
 		    packet.position(headspace);
 
-		    if (isDnsPacket(packet)) {
-			ByteBuffer newPacket = generateDnsResponse(packet, length);
+		    if (isDnsPacket(packet, false)) {
+			ByteBuffer newPacket = generateDnsResponse(packet, length, false);
 			dnsCachePrepareHeader(newPacket);
-			packet.position(headspace + 48);
+			packet.position(packet.position() + 48);
 			// ifaceOut.write(newPacket.array(), 0, newPacket.limit());
 			dnsclient.send(packet);
 			packet.clear();
@@ -818,6 +826,13 @@ public class ToyVpnRunnable implements Runnable {
 		// Read the incoming packet from the tunnel (server).
 		length = tunnel.read(packet);
 		if (length > 0) {
+		    if (isDnsPacket(packet, true)) {
+			ByteBuffer newPacket = generateDnsResponse(packet, length, true);
+			dnsCachePrepareHeader(newPacket);
+			packet.position(packet.position() + 48);
+			dnsclient.send(packet);
+		    } else
+
 		    // Ignore control messages, which start with zero.
 		    if (packet.get(packet.position()) != 0) {
 			ifaceChannel.write(packet);
