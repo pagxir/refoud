@@ -70,7 +70,7 @@ public class ToyVpnFragment extends PreferenceFragmentCompat
     @Override
     public boolean onPreferenceTreeClick(Preference preference) {
 
-	if (preference == mSwitcher) {
+	if (preference == mSwitcher && mActivity != null) {
 	    Log.d(LOG_TAG, "onPreferenceTreeClick " + mSwitcher.isChecked());
 	    mActivity.enableService(mSwitcher.isChecked());
 	}

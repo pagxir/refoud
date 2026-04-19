@@ -133,7 +133,7 @@ public class ToyVpnService extends VpnService {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        String action = intent.getAction();
+        String action = intent == null? ACTION_DISCONNECT: intent.getAction();
         Log.i(TAG, "onStartCommand with action " + action);
         if (ACTION_DISCONNECT.equals(action)) {
             disconnect();
