@@ -63,9 +63,17 @@ public class ToyVpnSettings extends FragmentActivity {
 
 	    supportFragmentManager
 		.beginTransaction()
-		.replace(R.id.setting, mToyVpnFragment)
+		.replace(R.id.setting, mToyVpnFragment, ToyVpnFragment.class.getSimpleName())
 		// .addToBackStack(null)
 		.commit();
+	} else {
+	    FragmentManager supportFragmentManager = getSupportFragmentManager();
+	    mToyVpnFragment = (ToyVpnFragment)supportFragmentManager.findFragmentByTag(ToyVpnFragment.class.getSimpleName());
+	    mToyVpnFragment.setActivity(this);
+	}
+
+	if (mToyVpnFragment == null) {
+            Log.d(LOG_TAG, "onCreate(Bundle savedInstanceState) mToyVpnFragment=null");
 	}
     }
 

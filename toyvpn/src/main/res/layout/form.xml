@@ -1,65 +1,226 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Copyright (C) 2011 The Android Open Source Project
-
-     Licensed under the Apache License, Version 2.0 (the "License");
-     you may not use this file except in compliance with the License.
-     You may obtain a copy of the License at
-
-          http://www.apache.org/licenses/LICENSE-2.0
-
-     Unless required by applicable law or agreed to in writing, software
-     distributed under the License is distributed on an "AS IS" BASIS,
-     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-     See the License for the specific language governing permissions and
-     limitations under the License.
--->
-
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FAFAFA"
+    android:fillViewport="true">
+
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content">
-    <LinearLayout android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="3mm">
+            android:text="@string/app"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:textColor="#42A5F5"
+            android:layout_marginBottom="24dp"
+            android:layout_gravity="center_horizontal"/>
 
-        <TextView style="@style/item" android:text="@string/address"/>
-        <EditText style="@style/item" android:id="@+id/address"/>
-
-        <TextView style="@style/item" android:text="@string/port"/>
-        <EditText style="@style/item" android:id="@+id/port" android:inputType="number"/>
-
-        <TextView style="@style/item" android:text="@string/dns_server"/>
-        <EditText style="@style/item" android:id="@+id/dns_server" android:inputType="text"/>
-
-        <TextView style="@style/item" android:text="@string/secret"/>
-        <EditText style="@style/item" android:id="@+id/secret" android:password="true"/>
-
-        <TextView style="@style/item" android:text="@string/proxyhost"/>
-        <EditText style="@style/item" android:id="@+id/proxyhost"/>
-
-        <TextView style="@style/item" android:text="@string/proxyport"/>
-        <EditText style="@style/item" android:id="@+id/proxyport" android:inputType="number"/>
-
-        <TextView style="@style/item" android:text="@string/packages"/>
-        <RadioGroup
-            style="@style/item"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal">
-            <RadioButton
-                android:id="@+id/allowed"
+            android:orientation="vertical"
+            android:background="@android:color/white"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp"
+            android:elevation="2dp">
+
+            <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/allowed"/>
-            <RadioButton
+                android:text="@string/config_header"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#42A5F5"
+                android:layout_marginBottom="12dp"/>
+
+            <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/disallowed"/>
-        </RadioGroup>
-        <EditText style="@style/item" android:id="@+id/packages"/>
+                android:text="@string/address"
+                android:textSize="12sp"
+                android:textColor="#757575"
+                android:layout_marginBottom="4dp"/>
 
-        <Button style="@style/item" android:id="@+id/connect" android:text="@string/connect"/>
-        <Button style="@style/item" android:id="@+id/disconnect" android:text="@string/disconnect"/>
+            <EditText
+                android:id="@+id/address"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@android:drawable/edit_text"
+                android:padding="8dp"
+                android:layout_marginBottom="12dp"/>
 
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/port"
+                android:textSize="12sp"
+                android:textColor="#757575"
+                android:layout_marginBottom="4dp"/>
+
+            <EditText
+                android:id="@+id/port"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@android:drawable/edit_text"
+                android:padding="8dp"
+                android:inputType="number"
+                android:layout_marginBottom="12dp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/dns_server"
+                android:textSize="12sp"
+                android:textColor="#757575"
+                android:layout_marginBottom="4dp"/>
+
+            <EditText
+                android:id="@+id/dns_server"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@android:drawable/edit_text"
+                android:padding="8dp"
+                android:layout_marginBottom="12dp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/secret"
+                android:textSize="12sp"
+                android:textColor="#757575"
+                android:layout_marginBottom="4dp"/>
+
+            <EditText
+                android:id="@+id/secret"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@android:drawable/edit_text"
+                android:padding="8dp"
+                android:inputType="textPassword"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@android:color/white"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp"
+            android:elevation="2dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Proxy"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#42A5F5"
+                android:layout_marginBottom="12dp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/proxyhost"
+                android:textSize="12sp"
+                android:textColor="#757575"
+                android:layout_marginBottom="4dp"/>
+
+            <EditText
+                android:id="@+id/proxyhost"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@android:drawable/edit_text"
+                android:padding="8dp"
+                android:layout_marginBottom="12dp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/proxyport"
+                android:textSize="12sp"
+                android:textColor="#757575"
+                android:layout_marginBottom="4dp"/>
+
+            <EditText
+                android:id="@+id/proxyport"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@android:drawable/edit_text"
+                android:padding="8dp"
+                android:inputType="number"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@android:color/white"
+            android:padding="16dp"
+            android:layout_marginBottom="24dp"
+            android:elevation="2dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/packages"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="#42A5F5"
+                android:layout_marginBottom="8dp"/>
+
+            <RadioGroup
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginBottom="8dp">
+
+                <RadioButton
+                    android:id="@+id/allowed"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/allowed"
+                    android:layout_marginEnd="24dp"/>
+
+                <RadioButton
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/disallowed"/>
+            </RadioGroup>
+
+            <EditText
+                android:id="@+id/packages"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@android:drawable/edit_text"
+                android:padding="8dp"
+                android:hint="com.example.app"/>
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/connect"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/connect"
+            android:textSize="16sp"
+            android:background="#42A5F5"
+            android:textColor="@android:color/white"
+            android:padding="16dp"/>
+
+        <Button
+            android:id="@+id/disconnect"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/disconnect"
+            android:textSize="16sp"
+            android:background="@android:color/white"
+            android:textColor="#42A5F5"
+            android:layout_marginTop="8dp"
+            android:padding="16dp"/>
     </LinearLayout>
 </ScrollView>

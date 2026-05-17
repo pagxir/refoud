@@ -5,6 +5,7 @@ ext {
 }
 
 android {
+    namespace 'net.cachefiles.toyvpn'
     compileSdkVersion 31
     buildToolsVersion "31.0.0"
     ndkVersion = '23.1.7779620'
@@ -17,8 +18,8 @@ android {
     }
 
     dependencies {
-	def preference_version = "1.2.1"
-	implementation "androidx.preference:preference-ktx:$preference_version"
+        def preference_version = "1.2.1"
+        implementation "androidx.preference:preference-ktx:$preference_version"
     }
 
     buildTypes {
@@ -45,9 +46,12 @@ android {
         }
     }
 
-
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    aaptOptions {
+        noCompress "dat"
     }
 }

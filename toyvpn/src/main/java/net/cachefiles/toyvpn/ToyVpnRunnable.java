@@ -117,7 +117,7 @@ public class ToyVpnRunnable implements Runnable {
     private PendingIntent mConfigureIntent;
     private OnConnectListener mOnConnectListener;
     private ConnectivityManager mManager = null;
-    private final static String LOG_TAG = "HELLO";
+    private static final String LOG_TAG = "ToyVpnRunnable_1";
 
     // Proxy settings
     private String mProxyHostName;
@@ -239,14 +239,14 @@ public class ToyVpnRunnable implements Runnable {
 
     private int mLinkMtu = 1500;
     private int mPeerMtu = 1500;
-    private int mHeadlen = 40 + 8 + 24 - 40;
+    private int mHeadlen = 40 + 8 + 28 - 40;
 
     public InetSocketAddress getDnsServer(boolean next) {
 	InetSocketAddress defServer = null;
 	Network currentNetwork = next? getUnderlyingNetwork(mManager): mManager.getActiveNetwork();
 
 	try {
-	    defServer = new InetSocketAddress(InetAddress.getByAddress(new byte[] {(byte)223, 5, 5, 5}), 53);
+	    defServer = new InetSocketAddress(InetAddress.getByAddress(new byte[] {(byte)119, 29, 29, 29}), 53);
 	} catch (Exception exception) {
 	}
 
@@ -720,9 +720,37 @@ public class ToyVpnRunnable implements Runnable {
 	    String parameters = "address,3402:52e2:76b5::5efe:10.63.249.107,64 dns," + dnsAddress; // handshakeServer(tunnel);
 	    // String parameters = "address,3402:52e2:76b5::5efe:10.101.0.10,64 dns,64:ff9b::7f09:909"; // handshakeServer(tunnel);
 	    parameters += " address,10.63.249.107,30";
+	    parameters += " address,114.114.114.114,32";
+	    parameters += " address,114.114.114.115,32";
+	    parameters += " address,180.76.76.76,32";
+	    parameters += " address,223.5.5.5,32";
 	    parameters += " route,64:ff9b::,64";
 	    parameters += " route,2000::,48";
 	    parameters += " route,2001:4860:4860::,48";
+
+	    final String routes[] = {
+		    "2000::/16",
+		    "2003::/16",
+		    "2004::/14",
+		    "2008::/13",
+		    "2010::/12",
+		    "2020::/11",
+		    "2040::/10",
+		    "2080::/9",
+		    "2100::/8",
+		    "2200::/7",
+		    "2410::/12",
+		    "2420::/11",
+		    "2440::/10",
+		    "2480::/9",
+		    "2500::/8",
+		    "2600::/7",
+		    "2800::/5",
+		    "3000::/4"
+	    };
+	    for (String item: routes) parameters += " route," + item.replaceFirst("/", ",");
+
+
 	    parameters += " mtu," + String.valueOf(mLinkMtu - mHeadlen);
 	    Log.i(getTag(), "config (" + parameters + ")");
 
@@ -1070,6 +1098,6 @@ public class ToyVpnRunnable implements Runnable {
     }
 
     private String getTag() {
-	return ToyVpnRunnable.class.getSimpleName() + "[" + mConnectionId + "]";
+	return ToyVpnRunnable.class.getSimpleName() + "_" + mConnectionId;
     }
 }
